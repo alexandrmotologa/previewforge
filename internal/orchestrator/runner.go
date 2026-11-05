@@ -12,6 +12,7 @@ import (
 
 	"github.com/alexandrmotologa/previewforge/internal/github"
 	"github.com/alexandrmotologa/previewforge/internal/model"
+	"github.com/alexandrmotologa/previewforge/internal/notification"
 	"github.com/alexandrmotologa/previewforge/internal/proxy"
 	"github.com/alexandrmotologa/previewforge/internal/storage"
 	"github.com/alexandrmotologa/previewforge/internal/webhook"
@@ -19,18 +20,19 @@ import (
 
 // Orchestrator coordinates the complete preview deployment workflow.
 type Orchestrator struct {
-	store           *storage.Store
-	config          model.SystemConfig
-	allocator       *PortAllocator
-	gitCloner       GitFetcher
-	composeBuilder  *ComposeBuilder
-	dockerRunner    DockerRunner
-	healthChecker   *HealthChecker
-	proxyRouter     proxy.ProxyRouter
-	commenter       *github.Commenter
-	broadcaster     *LogBroadcaster
-	deployLocks     map[string]*sync.Mutex
-	locksMu         sync.Mutex
+	store          *storage.Store
+	config         model.SystemConfig
+	allocator      *PortAllocator
+	gitCloner      GitFetcher
+	composeBuilder *ComposeBuilder
+	dockerRunner   DockerRunner
+	healthChecker  *HealthChecker
+	proxyRouter    proxy.ProxyRouter
+	commenter      *github.Commenter
+	notifier       *notification.Notifier
+	broadcaster    *LogBroadcaster
+	deployLocks    map[string]*sync.Mutex
+	locksMu        sync.Mutex
 }
 
 // NewOrchestrator constructs an Orchestrator.
@@ -44,9 +46,10 @@ func NewOrchestrator(
 	healthChecker *HealthChecker,
 	proxyRouter proxy.ProxyRouter,
 	commenter *github.Commenter,
+	notifier *notification.Notifier,
 	broadcaster *LogBroadcaster,
 ) *Orchestrator {
-	return &Orchestrator{
+	orch := &Orchestrator{
 		store:          store,
 		config:         cfg,
 		allocator:      allocator,
@@ -56,9 +59,24 @@ func NewOrchestrator(
 		healthChecker:  healthChecker,
 		proxyRouter:    proxyRouter,
 		commenter:      commenter,
+		notifier:       notifier,
 		broadcaster:    broadcaster,
 		deployLocks:    make(map[string]*sync.Mutex),
 	}
+
+	// Connect dynamic reverse proxy wake-on-request and activity tracking hooks
+	if proxyRouter != nil {
+		proxyRouter.SetWakeHandler(func(deploymentID string) error {
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+			defer cancel()
+			return orch.Wake(ctx, deploymentID)
+		})
+		proxyRouter.SetActivityHandler(func(deploymentID string) {
+			_ = store.TouchActivity(deploymentID)
+		})
+	}
+
+	return orch
 }
 
 func (o *Orchestrator) getLock(deploymentID string) *sync.Mutex {
@@ -102,30 +120,36 @@ func (o *Orchestrator) Deploy(ctx context.Context, req webhook.DeployRequest) (*
 	}
 
 	// 3. Persist initial deployment state
+	autoSleep := o.config.AutoSleepMinutes
+	if autoSleep <= 0 {
+		autoSleep = 60
+	}
+
 	dep := &model.Deployment{
-		ID:           deploymentID,
-		PRNumber:     req.PRNumber,
-		PRTitle:      req.PRTitle,
-		RepoOwner:    req.RepoOwner,
-		RepoName:     req.RepoName,
-		Branch:       req.Branch,
-		CommitSHA:    req.CommitSHA,
-		Author:       req.Author,
-		Status:       model.StatusBuilding,
-		Port:         port,
-		Subdomain:    subdomain,
-		PreviewURL:   previewURL,
-		ServiceName:  "web",
-		HealthStatus: "unknown",
-		CreatedAt:    time.Now().UTC(),
-		UpdatedAt:    time.Now().UTC(),
+		ID:               deploymentID,
+		PRNumber:         req.PRNumber,
+		PRTitle:          req.PRTitle,
+		RepoOwner:        req.RepoOwner,
+		RepoName:         req.RepoName,
+		Branch:           req.Branch,
+		CommitSHA:        req.CommitSHA,
+		Author:           req.Author,
+		Status:           model.StatusBuilding,
+		Port:             port,
+		Subdomain:        subdomain,
+		PreviewURL:       previewURL,
+		ServiceName:      "web",
+		HealthStatus:     "unknown",
+		LastActivityAt:   time.Now().UTC(),
+		AutoSleepMinutes: autoSleep,
+		CreatedAt:        time.Now().UTC(),
+		UpdatedAt:        time.Now().UTC(),
 	}
 
 	if err := o.store.SaveDeployment(dep); err != nil {
 		log.Printf("[orchestrator] Error saving deployment: %v", err)
 	}
 
-	// Helper for log recording
 	logLine := func(msg string) {
 		formatted := fmt.Sprintf("[%s] %s", time.Now().Format("15:04:05"), msg)
 		_ = o.store.AppendLog(deploymentID, formatted)
@@ -157,30 +181,75 @@ func (o *Orchestrator) Deploy(ctx context.Context, req webhook.DeployRequest) (*
 
 	// 7. Execute docker compose up
 	projectName := fmt.Sprintf("pf_pr%d_%s", req.PRNumber, strings.ToLower(req.RepoName))
-	// Clean non-alphanumeric chars from project name for Docker compatibility
 	projectName = strings.ReplaceAll(projectName, "-", "_")
 
 	if err := o.dockerRunner.Up(ctx, projectName, workspaceDir, inspection.BaseComposeFile, inspection.OverrideFile, logLine); err != nil {
 		return o.failDeployment(dep, "Docker Compose build/up failed: "+err.Error(), logLine)
 	}
 
-	// 8. Health check verification
+	// 8. Run optional post-deploy hook (e.g. database migrations)
+	if inspection.PostDeploy != nil && inspection.PostDeploy.Command != "" {
+		targetService := inspection.PostDeploy.Service
+		if targetService == "" {
+			targetService = inspection.ServiceName
+		}
+		logLine(fmt.Sprintf("Executing post-deploy hook on %s: %s", targetService, inspection.PostDeploy.Command))
+
+		hookCtx := ctx
+		if inspection.PostDeploy.TimeoutSec > 0 {
+			var hookCancel context.CancelFunc
+			hookCtx, hookCancel = context.WithTimeout(ctx, time.Duration(inspection.PostDeploy.TimeoutSec)*time.Second)
+			defer hookCancel()
+		}
+
+		cmdParts := strings.Fields(inspection.PostDeploy.Command)
+		hookOut, hookErr := o.dockerRunner.Exec(hookCtx, projectName, targetService, cmdParts)
+		if hookErr != nil {
+			logLine(fmt.Sprintf("Post-deploy hook warning: %v", hookErr))
+		} else {
+			logLine(fmt.Sprintf("Post-deploy hook output: %s", strings.TrimSpace(hookOut)))
+		}
+	}
+
+	// 9. Health check verification
 	logLine("Verifying container readiness...")
 	if err := o.healthChecker.WaitForReady(ctx, port, inspection.HealthPath, 60*time.Second, logLine); err != nil {
 		return o.failDeployment(dep, "Health check failed: "+err.Error(), logLine)
 	}
 
-	// 9. Register reverse proxy route
-	if err := o.proxyRouter.RegisterRoute(subdomain, port); err != nil {
+	// 10. Register reverse proxy route with Basic Auth if configured
+	authUser := o.config.BasicAuthUser
+	authPass := o.config.BasicAuthPassword
+	if inspection.AuthUser != "" {
+		authUser = inspection.AuthUser
+		authPass = inspection.AuthPassword
+	}
+
+	routeCfg := proxy.RouteConfig{
+		TargetPort:   port,
+		DeploymentID: deploymentID,
+		AuthUser:     authUser,
+		AuthPassword: authPass,
+		IsSleeping:   false,
+	}
+
+	if err := o.proxyRouter.RegisterRouteWithConfig(subdomain, routeCfg); err != nil {
 		return o.failDeployment(dep, "Proxy route registration failed: "+err.Error(), logLine)
 	}
 
-	// 10. Mark Running and finalize
+	// 11. Mark Running and finalize
 	duration := int64(time.Since(startTime).Seconds())
 	dep.Status = model.StatusRunning
 	dep.HealthStatus = "healthy"
 	dep.BuildDurationSec = duration
 	dep.ErrorMessage = ""
+	dep.LastActivityAt = time.Now().UTC()
+
+	// Capture initial stats
+	if stats, statErr := o.dockerRunner.Stats(ctx, projectName); statErr == nil && stats != nil {
+		dep.CPUPercent = stats.CPUPercent
+		dep.MemoryMB = stats.MemoryMB
+	}
 
 	if err := o.store.SaveDeployment(dep); err != nil {
 		log.Printf("[orchestrator] Error updating deployment status: %v", err)
@@ -193,7 +262,130 @@ func (o *Orchestrator) Deploy(ctx context.Context, req webhook.DeployRequest) (*
 		o.commenter.PostReady(dep)
 	}
 
+	if o.notifier != nil {
+		o.notifier.NotifyReady(dep)
+	}
+
 	return dep, nil
+}
+
+// Sleep hibernates a running preview container stack to free host memory.
+func (o *Orchestrator) Sleep(ctx context.Context, deploymentID string) error {
+	lock := o.getLock(deploymentID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	dep, err := o.store.GetDeployment(deploymentID)
+	if err != nil || dep == nil {
+		return fmt.Errorf("deployment %s not found", deploymentID)
+	}
+
+	if dep.Status != model.StatusRunning {
+		return nil
+	}
+
+	projectName := fmt.Sprintf("pf_pr%d_%s", dep.PRNumber, strings.ToLower(dep.RepoName))
+	projectName = strings.ReplaceAll(projectName, "-", "_")
+	workspaceDir := filepath.Join(o.config.WorkspacesDir, deploymentID)
+
+	logLine := func(msg string) {
+		formatted := fmt.Sprintf("[%s] %s", time.Now().Format("15:04:05"), msg)
+		_ = o.store.AppendLog(deploymentID, formatted)
+		o.broadcaster.Broadcast(deploymentID, formatted)
+	}
+
+	logLine("Hibernating preview containers to conserve host RAM...")
+
+	baseFile := "docker-compose.yml"
+	overrideFile := "docker-compose.previewforge.override.yml"
+	if err := o.dockerRunner.Stop(ctx, projectName, workspaceDir, baseFile, overrideFile, logLine); err != nil {
+		logLine(fmt.Sprintf("Warning: stop failed: %v", err))
+	}
+
+	dep.Status = model.StatusSleeping
+	dep.HealthStatus = "sleeping"
+	dep.CPUPercent = 0.0
+	dep.MemoryMB = 0.0
+	_ = o.store.SaveDeployment(dep)
+
+	// Update proxy route to sleeping
+	o.proxyRouter.SetRouteSleeping(dep.Subdomain, true)
+
+	logLine("Preview environment is now hibernated. It will wake up on next HTTP request.")
+	return nil
+}
+
+// Wake resumes a hibernated preview container stack on request.
+func (o *Orchestrator) Wake(ctx context.Context, deploymentID string) error {
+	lock := o.getLock(deploymentID)
+	lock.Lock()
+	defer lock.Unlock()
+
+	dep, err := o.store.GetDeployment(deploymentID)
+	if err != nil || dep == nil {
+		return fmt.Errorf("deployment %s not found", deploymentID)
+	}
+
+	if dep.Status != model.StatusSleeping {
+		return nil
+	}
+
+	projectName := fmt.Sprintf("pf_pr%d_%s", dep.PRNumber, strings.ToLower(dep.RepoName))
+	projectName = strings.ReplaceAll(projectName, "-", "_")
+	workspaceDir := filepath.Join(o.config.WorkspacesDir, deploymentID)
+
+	logLine := func(msg string) {
+		formatted := fmt.Sprintf("[%s] %s", time.Now().Format("15:04:05"), msg)
+		_ = o.store.AppendLog(deploymentID, formatted)
+		o.broadcaster.Broadcast(deploymentID, formatted)
+	}
+
+	logLine("Waking up hibernated preview stack...")
+
+	baseFile := "docker-compose.yml"
+	overrideFile := "docker-compose.previewforge.override.yml"
+	if err := o.dockerRunner.Start(ctx, projectName, workspaceDir, baseFile, overrideFile, logLine); err != nil {
+		return fmt.Errorf("failed to wake stack: %w", err)
+	}
+
+	// Verify health
+	if err := o.healthChecker.WaitForReady(ctx, dep.Port, "/", 30*time.Second, logLine); err != nil {
+		return fmt.Errorf("wake readiness check failed: %w", err)
+	}
+
+	dep.Status = model.StatusRunning
+	dep.HealthStatus = "healthy"
+	dep.LastActivityAt = time.Now().UTC()
+	_ = o.store.SaveDeployment(dep)
+
+	o.proxyRouter.SetRouteSleeping(dep.Subdomain, false)
+
+	logLine("Preview environment resumed successfully.")
+	return nil
+}
+
+// Exec executes a command inside a specific preview container service (for migrations or interactive web studio console).
+func (o *Orchestrator) Exec(ctx context.Context, deploymentID, service string, command []string) (string, error) {
+	dep, err := o.store.GetDeployment(deploymentID)
+	if err != nil || dep == nil {
+		return "", fmt.Errorf("deployment %s not found", deploymentID)
+	}
+
+	if dep.Status != model.StatusRunning {
+		return "", fmt.Errorf("cannot exec into deployment with status %s", dep.Status)
+	}
+
+	if service == "" {
+		service = dep.ServiceName
+	}
+	if service == "" {
+		service = "web"
+	}
+
+	projectName := fmt.Sprintf("pf_pr%d_%s", dep.PRNumber, strings.ToLower(dep.RepoName))
+	projectName = strings.ReplaceAll(projectName, "-", "_")
+
+	return o.dockerRunner.Exec(ctx, projectName, service, command)
 }
 
 // Teardown stops containers and cleans up all resources associated with a pull request.
@@ -245,6 +437,10 @@ func (o *Orchestrator) Teardown(ctx context.Context, repoOwner, repoName string,
 		o.commenter.PostDestroyed(repoOwner, repoName, prNumber)
 	}
 
+	if o.notifier != nil {
+		o.notifier.NotifyDestroyed(repoOwner, repoName, prNumber)
+	}
+
 	return nil
 }
 
@@ -256,13 +452,16 @@ func (o *Orchestrator) failDeployment(dep *model.Deployment, errMsg string, logL
 	dep.ErrorMessage = errMsg
 	_ = o.store.SaveDeployment(dep)
 
-	// Fetch tail of logs for PR comment
 	logs, _ := o.store.GetLogs(dep.ID, 20)
 	snippet := strings.Join(logs, "\n")
 
 	if o.commenter != nil {
 		o.commenter.SetCommitStatus(dep.RepoOwner, dep.RepoName, dep.CommitSHA, "failure", dep.PreviewURL, errMsg)
 		o.commenter.PostFailed(dep, snippet)
+	}
+
+	if o.notifier != nil {
+		o.notifier.NotifyFailed(dep)
 	}
 
 	return dep, fmt.Errorf("%s", errMsg)

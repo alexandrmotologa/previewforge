@@ -1,12 +1,14 @@
 import React, { useState } from 'react';
-import { ExternalLink, Terminal, RotateCw, Trash2, GitBranch, GitCommit, Check, Clock, AlertTriangle } from 'lucide-react';
+import { ExternalLink, Terminal, RotateCw, Trash2, GitBranch, GitCommit, Check, Clock, AlertTriangle, Moon, Sun, Cpu } from 'lucide-react';
 import { Deployment } from '../types';
 
 interface EnvironmentCardProps {
   deployment: Deployment;
-  onViewLogs: (dep: Deployment) => void;
+  onViewLogs: (dep: Deployment, initialTab?: 'logs' | 'exec') => void;
   onRebuild: (id: string) => void;
   onDestroy: (id: string) => void;
+  onSleep: (id: string) => void;
+  onWake: (id: string) => void;
 }
 
 export const EnvironmentCard: React.FC<EnvironmentCardProps> = ({
@@ -14,6 +16,8 @@ export const EnvironmentCard: React.FC<EnvironmentCardProps> = ({
   onViewLogs,
   onRebuild,
   onDestroy,
+  onSleep,
+  onWake,
 }) => {
   const [copiedSha, setCopiedSha] = useState(false);
 
@@ -32,9 +36,16 @@ export const EnvironmentCard: React.FC<EnvironmentCardProps> = ({
             Live
           </span>
         );
-      case 'building':
+      case 'sleeping':
         return (
           <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20">
+            <Moon className="w-3 h-3" />
+            Hibernated
+          </span>
+        );
+      case 'building':
+        return (
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-sky-500/10 text-sky-400 border border-sky-500/20">
             <RotateCw className="w-3 h-3 animate-spin" />
             Building
           </span>
@@ -79,8 +90,8 @@ export const EnvironmentCard: React.FC<EnvironmentCardProps> = ({
           <div>{getStatusBadge()}</div>
         </div>
 
-        {/* Branch and Commit info */}
-        <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400 mb-4 bg-slate-950/40 p-2.5 rounded-lg border border-slate-800/80">
+        {/* Branch, Commit & Port */}
+        <div className="flex flex-wrap items-center gap-2.5 text-xs text-slate-400 mb-4 bg-slate-950/40 p-2.5 rounded-lg border border-slate-800/80">
           <div className="flex items-center gap-1.5">
             <GitBranch className="w-3.5 h-3.5 text-slate-500" />
             <span className="font-mono text-slate-300">{deployment.branch}</span>
@@ -104,6 +115,15 @@ export const EnvironmentCard: React.FC<EnvironmentCardProps> = ({
           <div className="text-slate-500">
             Port: <span className="font-mono text-slate-300">{deployment.port}</span>
           </div>
+          {deployment.status === 'running' && deployment.memory_mb > 0 && (
+            <>
+              <span className="text-slate-700">•</span>
+              <div className="flex items-center gap-1 text-slate-300 font-mono">
+                <Cpu className="w-3 h-3 text-violet-400" />
+                <span>{deployment.memory_mb.toFixed(0)}MB</span>
+              </div>
+            </>
+          )}
         </div>
 
         {/* Error message callout if failed */}
@@ -114,7 +134,7 @@ export const EnvironmentCard: React.FC<EnvironmentCardProps> = ({
         )}
 
         {/* Live Subdomain Link */}
-        {deployment.status === 'running' && (
+        {(deployment.status === 'running' || deployment.status === 'sleeping') && (
           <div className="mb-4">
             <a
               href={deployment.preview_url}
@@ -143,16 +163,46 @@ export const EnvironmentCard: React.FC<EnvironmentCardProps> = ({
               <span>Open</span>
             </a>
           )}
+
+          {deployment.status === 'sleeping' && (
+            <button
+              onClick={() => onWake(deployment.id)}
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-amber-600 hover:bg-amber-500 text-white text-xs font-medium transition-colors"
+            >
+              <Sun className="w-3.5 h-3.5" />
+              <span>Wake Up</span>
+            </button>
+          )}
+
           <button
-            onClick={() => onViewLogs(deployment)}
+            onClick={() => onViewLogs(deployment, 'logs')}
             className="flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white text-xs font-medium transition-colors"
           >
             <Terminal className="w-3.5 h-3.5" />
             <span>Logs</span>
           </button>
+
+          {deployment.status === 'running' && (
+            <button
+              onClick={() => onViewLogs(deployment, 'exec')}
+              title="Execute diagnostic command inside container"
+              className="flex items-center gap-1 px-2.5 py-1.5 rounded-md bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white text-xs font-medium transition-colors"
+            >
+              <span>Exec</span>
+            </button>
+          )}
         </div>
 
         <div className="flex items-center gap-1">
+          {deployment.status === 'running' && (
+            <button
+              onClick={() => onSleep(deployment.id)}
+              title="Hibernate stack (free VPS memory)"
+              className="p-1.5 rounded-md hover:bg-slate-800 text-slate-400 hover:text-amber-400 transition-colors"
+            >
+              <Moon className="w-3.5 h-3.5" />
+            </button>
+          )}
           <button
             onClick={() => onRebuild(deployment.id)}
             title="Rebuild stack"

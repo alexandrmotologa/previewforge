@@ -1,4 +1,4 @@
-export type DeploymentStatus = 'pending' | 'building' | 'running' | 'failed' | 'stopped' | 'destroyed';
+export type DeploymentStatus = 'pending' | 'building' | 'running' | 'sleeping' | 'failed' | 'stopped' | 'destroyed';
 
 export interface Deployment {
   id: string;
@@ -17,6 +17,10 @@ export interface Deployment {
   build_duration_sec: number;
   health_status: string;
   error_message?: string;
+  last_activity_at: string;
+  auto_sleep_minutes: number;
+  cpu_percent: number;
+  memory_mb: number;
   created_at: string;
   updated_at: string;
 }
@@ -24,6 +28,7 @@ export interface Deployment {
 export interface SystemStats {
   daemon_uptime_sec: number;
   active_deployments: number;
+  sleeping_deployments: number;
   total_deployments: number;
   port_pool_used: number;
   port_pool_total: number;
@@ -32,6 +37,9 @@ export interface SystemStats {
   host_ram_percent: number;
   host_cpu_percent: number;
   host_disk_percent: number;
+  host_disk_free_gb: number;
+  host_disk_total_gb: number;
+  disk_low_alert: boolean;
 }
 
 export interface SystemConfig {
@@ -42,8 +50,12 @@ export interface SystemConfig {
   port_range_end: number;
   workspaces_dir: string;
   idle_timeout_minutes: number;
+  auto_sleep_minutes: number;
   require_label: string;
   has_github_token: boolean;
   has_webhook_secret: boolean;
   allow_untrusted_forks: boolean;
+  has_basic_auth: boolean;
+  has_discord_webhook: boolean;
+  has_slack_webhook: boolean;
 }

@@ -19,7 +19,7 @@ type IssueComment struct {
 	} `json:"user"`
 }
 
-// Client wraps GitHub REST API calls for status checks and PR comments.
+// Client wraps GitHub REST API calls for status checks, PR comments, and native Deployments.
 type Client struct {
 	token      string
 	baseURL    string
@@ -76,6 +76,89 @@ func (c *Client) CreateCommitStatus(owner, repo, sha, state, targetURL, descript
 	if resp.StatusCode >= 400 {
 		respBytes, _ := io.ReadAll(resp.Body)
 		return fmt.Errorf("github api status check error %d: %s", resp.StatusCode, string(respBytes))
+	}
+
+	return nil
+}
+
+// CreateDeployment registers a native GitHub Deployment.
+func (c *Client) CreateDeployment(owner, repo, ref, environment string) (int64, error) {
+	if c.token == "" {
+		return 0, nil
+	}
+
+	endpoint := fmt.Sprintf("%s/repos/%s/%s/deployments", c.baseURL, owner, repo)
+	payload := map[string]any{
+		"ref":                   ref,
+		"environment":           environment,
+		"required_contexts":     []string{},
+		"auto_merge":            false,
+		"transient_environment": true,
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return 0, err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return 0, err
+	}
+	c.setHeaders(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		respBytes, _ := io.ReadAll(resp.Body)
+		return 0, fmt.Errorf("github api create deployment error %d: %s", resp.StatusCode, string(respBytes))
+	}
+
+	var res struct {
+		ID int64 `json:"id"`
+	}
+	_ = json.NewDecoder(resp.Body).Decode(&res)
+	return res.ID, nil
+}
+
+// CreateDeploymentStatus updates the status of a GitHub Deployment (pending, success, inactive, failure).
+func (c *Client) CreateDeploymentStatus(owner, repo string, deploymentID int64, state, targetURL, description string) error {
+	if c.token == "" || deploymentID <= 0 {
+		return nil
+	}
+
+	endpoint := fmt.Sprintf("%s/repos/%s/%s/deployments/%d/statuses", c.baseURL, owner, repo, deploymentID)
+	payload := map[string]string{
+		"state":          state,
+		"target_url":     targetURL,
+		"environment_url": targetURL,
+		"description":    description,
+	}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return err
+	}
+
+	req, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	c.setHeaders(req)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 400 {
+		respBytes, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("github api create deployment status error %d: %s", resp.StatusCode, string(respBytes))
 	}
 
 	return nil

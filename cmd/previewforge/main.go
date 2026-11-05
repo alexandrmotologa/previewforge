@@ -14,6 +14,7 @@ import (
 	"github.com/alexandrmotologa/previewforge/internal/config"
 	"github.com/alexandrmotologa/previewforge/internal/github"
 	"github.com/alexandrmotologa/previewforge/internal/model"
+	"github.com/alexandrmotologa/previewforge/internal/notification"
 	"github.com/alexandrmotologa/previewforge/internal/orchestrator"
 	"github.com/alexandrmotologa/previewforge/internal/proxy"
 	"github.com/alexandrmotologa/previewforge/internal/server"
@@ -21,7 +22,7 @@ import (
 	"github.com/alexandrmotologa/previewforge/internal/webhook"
 )
 
-const version = "1.0.0"
+const version = "1.1.0"
 
 func main() {
 	if len(os.Args) < 2 {
@@ -78,8 +79,13 @@ func runServe(args []string) {
 	portStartFlag := fs.Int("port-start", defaultCfg.PortRangeStart, "Start of dynamic host port allocation range")
 	portEndFlag := fs.Int("port-end", defaultCfg.PortRangeEnd, "End of dynamic host port allocation range")
 	idleTimeoutFlag := fs.Int("idle-timeout", defaultCfg.IdleTimeoutMinutes, "Idle timeout in minutes before auto-reaping previews")
+	autoSleepFlag := fs.Int("auto-sleep", defaultCfg.AutoSleepMinutes, "Minutes of inactivity before hibernating containers (scale-to-zero)")
 	requireLabelFlag := fs.String("require-label", defaultCfg.RequireLabel, "Only deploy PRs that contain this label")
 	allowForksFlag := fs.Bool("allow-forks", defaultCfg.AllowUntrustedForks, "Allow automatic deployments from untrusted forks")
+	authUserFlag := fs.String("auth-user", defaultCfg.BasicAuthUser, "Global Basic Auth username for preview environments")
+	authPassFlag := fs.String("auth-pass", defaultCfg.BasicAuthPassword, "Global Basic Auth password for preview environments")
+	discordFlag := fs.String("discord-webhook", defaultCfg.DiscordWebhookURL, "Discord Webhook URL for build notifications")
+	slackFlag := fs.String("slack-webhook", defaultCfg.SlackWebhookURL, "Slack Webhook URL for build notifications")
 
 	_ = fs.Parse(args)
 
@@ -94,8 +100,13 @@ func runServe(args []string) {
 		WebhookSecret:       *secretFlag,
 		WorkspacesDir:       filepath.Join(*dataDirFlag, "workspaces"),
 		IdleTimeoutMinutes:  *idleTimeoutFlag,
+		AutoSleepMinutes:    *autoSleepFlag,
 		RequireLabel:        *requireLabelFlag,
 		AllowUntrustedForks: *allowForksFlag,
+		BasicAuthUser:       *authUserFlag,
+		BasicAuthPassword:   *authPassFlag,
+		DiscordWebhookURL:   *discordFlag,
+		SlackWebhookURL:     *slackFlag,
 	}
 
 	dbPath := filepath.Join(*dataDirFlag, "previewforge.db")
@@ -117,8 +128,14 @@ func runServe(args []string) {
 	existingDeps, err := store.ListDeployments()
 	if err == nil {
 		for _, dep := range existingDeps {
-			if dep.Status == model.StatusRunning && dep.Port > 0 && dep.Subdomain != "" {
-				_ = proxyRouter.RegisterRoute(dep.Subdomain, dep.Port)
+			if (dep.Status == model.StatusRunning || dep.Status == model.StatusSleeping) && dep.Port > 0 && dep.Subdomain != "" {
+				_ = proxyRouter.RegisterRouteWithConfig(dep.Subdomain, proxy.RouteConfig{
+					TargetPort:   dep.Port,
+					DeploymentID: dep.ID,
+					AuthUser:     cfg.BasicAuthUser,
+					AuthPassword: cfg.BasicAuthPassword,
+					IsSleeping:   dep.Status == model.StatusSleeping,
+				})
 			}
 		}
 	}
@@ -130,6 +147,7 @@ func runServe(args []string) {
 	dockerRunner := orchestrator.NewSystemDockerRunner()
 	healthChecker := orchestrator.NewHealthChecker()
 	broadcaster := orchestrator.NewLogBroadcaster()
+	notifier := notification.NewNotifier(cfg.DiscordWebhookURL, cfg.SlackWebhookURL)
 
 	var commenter *github.Commenter
 	if cfg.GitHubToken != "" {
@@ -147,12 +165,13 @@ func runServe(args []string) {
 		healthChecker,
 		proxyRouter,
 		commenter,
+		notifier,
 		broadcaster,
 	)
 
-	// Start background reaper for stale environments
-	reaper := orchestrator.NewReaper(store, orch, cfg.WorkspacesDir, cfg.IdleTimeoutMinutes)
-	reaper.Start(10 * time.Minute)
+	// Start background reaper for stale environments & disk space guard
+	reaper := orchestrator.NewReaper(store, orch, dockerRunner, cfg.WorkspacesDir, cfg.IdleTimeoutMinutes)
+	reaper.Start(5 * time.Minute)
 	defer reaper.Stop()
 
 	// Webhook handler
@@ -174,15 +193,15 @@ func runServe(args []string) {
  Base Domain:        *.%s
  Proxy Engine:       %s
  Host Ports Pool:    %d - %d
+ Auto-Sleep Hibernation: %d min
  Database:           %s
  Workspaces:         %s
  Webhook URL:        http://<host>:%d/webhook
  Studio Dashboard:   http://localhost:%d
-`, version, cfg.PublicPort, cfg.BaseDomain, cfg.ProxyMode, cfg.PortRangeStart, cfg.PortRangeEnd, dbPath, cfg.WorkspacesDir, cfg.PublicPort, cfg.PublicPort)
+`, version, cfg.PublicPort, cfg.BaseDomain, cfg.ProxyMode, cfg.PortRangeStart, cfg.PortRangeEnd, cfg.AutoSleepMinutes, dbPath, cfg.WorkspacesDir, cfg.PublicPort, cfg.PublicPort)
 
 	fmt.Print(banner)
 
-	// Graceful shutdown listener
 	stopChan := make(chan os.Signal, 1)
 	signal.Notify(stopChan, os.Interrupt, syscall.SIGTERM)
 
@@ -246,13 +265,12 @@ func runDestroy(args []string) {
 	dbPath := filepath.Join(dataDir, "previewforge.db")
 	store, err := storage.NewStore(dbPath)
 	if err != nil {
-		log.Fatalf("Failed to open database: %v", err)
+		log.Fatalf("Failed to open database at %s: %v", dbPath, err)
 	}
 	defer store.Close()
 
 	dep, err := store.GetDeployment(target)
 	if err != nil || dep == nil {
-		// Try finding by PR number
 		deps, _ := store.ListDeployments()
 		for _, d := range deps {
 			if fmt.Sprintf("%d", d.PRNumber) == target {
@@ -275,7 +293,7 @@ func runDestroy(args []string) {
 	proxyRouter := proxy.NewStandaloneProxy()
 
 	orch := orchestrator.NewOrchestrator(
-		store, cfg, allocator, nil, nil, dockerRunner, nil, proxyRouter, nil, orchestrator.NewLogBroadcaster(),
+		store, cfg, allocator, nil, nil, dockerRunner, nil, proxyRouter, nil, nil, orchestrator.NewLogBroadcaster(),
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)

@@ -12,6 +12,7 @@ export const App: React.FC = () => {
   const [stats, setStats] = useState<SystemStats | null>(null);
   const [config, setConfig] = useState<SystemConfig | null>(null);
   const [selectedDepForLogs, setSelectedDepForLogs] = useState<Deployment | null>(null);
+  const [drawerTab, setDrawerTab] = useState<'logs' | 'exec'>('logs');
   const [isSimulatorOpen, setIsSimulatorOpen] = useState(false);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -76,6 +77,24 @@ export const App: React.FC = () => {
     }
   };
 
+  const handleSleep = async (id: string) => {
+    try {
+      await fetch(`/api/deployments/${id}/sleep`, { method: 'POST' });
+      fetchDeployments();
+    } catch (err) {
+      console.error('Failed to trigger sleep:', err);
+    }
+  };
+
+  const handleWake = async (id: string) => {
+    try {
+      await fetch(`/api/deployments/${id}/wake`, { method: 'POST' });
+      fetchDeployments();
+    } catch (err) {
+      console.error('Failed to trigger wake:', err);
+    }
+  };
+
   const handleDestroy = async (id: string) => {
     if (!window.confirm('Are you sure you want to destroy this preview environment? All container volumes will be deleted.')) {
       return;
@@ -106,16 +125,21 @@ export const App: React.FC = () => {
           <div>
             <h2 className="text-lg font-semibold text-slate-100">Pull Request Environments</h2>
             <p className="text-xs text-slate-400">
-              Ephemeral Docker Compose preview stacks with isolated port multiplexing
+              Ephemeral Docker Compose preview stacks with isolated port multiplexing &amp; auto-hibernation
             </p>
           </div>
         </div>
 
         <EnvironmentGrid
           deployments={deployments}
-          onViewLogs={(dep) => setSelectedDepForLogs(dep)}
+          onViewLogs={(dep, initialTab) => {
+            setSelectedDepForLogs(dep);
+            setDrawerTab(initialTab || 'logs');
+          }}
           onRebuild={handleRebuild}
           onDestroy={handleDestroy}
+          onSleep={handleSleep}
+          onWake={handleWake}
         />
       </main>
 
@@ -123,9 +147,10 @@ export const App: React.FC = () => {
         <p>PreviewForge Ephemeral Preview Daemon • Free &amp; self-hosted alternative to Vercel Previews</p>
       </footer>
 
-      {/* Slide-over log drawer */}
+      {/* Slide-over log & exec drawer */}
       <LogDrawer
         deployment={selectedDepForLogs}
+        initialTab={drawerTab}
         onClose={() => setSelectedDepForLogs(null)}
       />
 

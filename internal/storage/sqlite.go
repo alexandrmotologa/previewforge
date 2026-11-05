@@ -73,6 +73,10 @@ func (s *Store) migrate() error {
 			build_duration_sec INTEGER NOT NULL DEFAULT 0,
 			health_status TEXT NOT NULL DEFAULT 'unknown',
 			error_message TEXT NOT NULL DEFAULT '',
+			last_activity_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+			auto_sleep_minutes INTEGER NOT NULL DEFAULT 60,
+			cpu_percent REAL NOT NULL DEFAULT 0.0,
+			memory_mb REAL NOT NULL DEFAULT 0.0,
 			created_at DATETIME NOT NULL,
 			updated_at DATETIME NOT NULL
 		);`,
@@ -105,7 +109,19 @@ func (s *Store) migrate() error {
 			return err
 		}
 	}
+
+	// Schema updates for existing tables
+	_ = s.execOptional(`ALTER TABLE deployments ADD COLUMN last_activity_at DATETIME DEFAULT CURRENT_TIMESTAMP`)
+	_ = s.execOptional(`ALTER TABLE deployments ADD COLUMN auto_sleep_minutes INTEGER DEFAULT 60`)
+	_ = s.execOptional(`ALTER TABLE deployments ADD COLUMN cpu_percent REAL DEFAULT 0.0`)
+	_ = s.execOptional(`ALTER TABLE deployments ADD COLUMN memory_mb REAL DEFAULT 0.0`)
+
 	return nil
+}
+
+func (s *Store) execOptional(query string) error {
+	_, err := s.db.Exec(query)
+	return err
 }
 
 // SaveDeployment persists or updates a deployment.
@@ -117,13 +133,17 @@ func (s *Store) SaveDeployment(d *model.Deployment) error {
 	if d.CreatedAt.IsZero() {
 		d.CreatedAt = now
 	}
+	if d.LastActivityAt.IsZero() {
+		d.LastActivityAt = now
+	}
 	d.UpdatedAt = now
 
 	query := `INSERT INTO deployments (
 		id, pr_number, pr_title, repo_owner, repo_name, branch, commit_sha, author,
 		status, port, subdomain, preview_url, service_name, build_duration_sec,
-		health_status, error_message, created_at, updated_at
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		health_status, error_message, last_activity_at, auto_sleep_minutes,
+		cpu_percent, memory_mb, created_at, updated_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 	ON CONFLICT(id) DO UPDATE SET
 		pr_number = excluded.pr_number,
 		pr_title = excluded.pr_title,
@@ -140,12 +160,17 @@ func (s *Store) SaveDeployment(d *model.Deployment) error {
 		build_duration_sec = excluded.build_duration_sec,
 		health_status = excluded.health_status,
 		error_message = excluded.error_message,
+		last_activity_at = excluded.last_activity_at,
+		auto_sleep_minutes = excluded.auto_sleep_minutes,
+		cpu_percent = excluded.cpu_percent,
+		memory_mb = excluded.memory_mb,
 		updated_at = excluded.updated_at;`
 
 	_, err := s.db.Exec(query,
 		d.ID, d.PRNumber, d.PRTitle, d.RepoOwner, d.RepoName, d.Branch, d.CommitSHA, d.Author,
 		string(d.Status), d.Port, d.Subdomain, d.PreviewURL, d.ServiceName, d.BuildDurationSec,
-		d.HealthStatus, d.ErrorMessage, d.CreatedAt, d.UpdatedAt,
+		d.HealthStatus, d.ErrorMessage, d.LastActivityAt, d.AutoSleepMinutes,
+		d.CPUPercent, d.MemoryMB, d.CreatedAt, d.UpdatedAt,
 	)
 	return err
 }
@@ -157,7 +182,8 @@ func (s *Store) GetDeployment(id string) (*model.Deployment, error) {
 
 	query := `SELECT id, pr_number, pr_title, repo_owner, repo_name, branch, commit_sha, author,
 		status, port, subdomain, preview_url, service_name, build_duration_sec,
-		health_status, error_message, created_at, updated_at
+		health_status, error_message, last_activity_at, auto_sleep_minutes,
+		cpu_percent, memory_mb, created_at, updated_at
 		FROM deployments WHERE id = ?`
 
 	row := s.db.QueryRow(query, id)
@@ -167,7 +193,8 @@ func (s *Store) GetDeployment(id string) (*model.Deployment, error) {
 	err := row.Scan(
 		&d.ID, &d.PRNumber, &d.PRTitle, &d.RepoOwner, &d.RepoName, &d.Branch, &d.CommitSHA, &d.Author,
 		&statusStr, &d.Port, &d.Subdomain, &d.PreviewURL, &d.ServiceName, &d.BuildDurationSec,
-		&d.HealthStatus, &d.ErrorMessage, &d.CreatedAt, &d.UpdatedAt,
+		&d.HealthStatus, &d.ErrorMessage, &d.LastActivityAt, &d.AutoSleepMinutes,
+		&d.CPUPercent, &d.MemoryMB, &d.CreatedAt, &d.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -186,7 +213,8 @@ func (s *Store) GetDeploymentByPR(repoOwner, repoName string, prNumber int) (*mo
 
 	query := `SELECT id, pr_number, pr_title, repo_owner, repo_name, branch, commit_sha, author,
 		status, port, subdomain, preview_url, service_name, build_duration_sec,
-		health_status, error_message, created_at, updated_at
+		health_status, error_message, last_activity_at, auto_sleep_minutes,
+		cpu_percent, memory_mb, created_at, updated_at
 		FROM deployments WHERE repo_owner = ? AND repo_name = ? AND pr_number = ?
 		ORDER BY created_at DESC LIMIT 1`
 
@@ -197,7 +225,8 @@ func (s *Store) GetDeploymentByPR(repoOwner, repoName string, prNumber int) (*mo
 	err := row.Scan(
 		&d.ID, &d.PRNumber, &d.PRTitle, &d.RepoOwner, &d.RepoName, &d.Branch, &d.CommitSHA, &d.Author,
 		&statusStr, &d.Port, &d.Subdomain, &d.PreviewURL, &d.ServiceName, &d.BuildDurationSec,
-		&d.HealthStatus, &d.ErrorMessage, &d.CreatedAt, &d.UpdatedAt,
+		&d.HealthStatus, &d.ErrorMessage, &d.LastActivityAt, &d.AutoSleepMinutes,
+		&d.CPUPercent, &d.MemoryMB, &d.CreatedAt, &d.UpdatedAt,
 	)
 	if err == sql.ErrNoRows {
 		return nil, nil
@@ -216,7 +245,8 @@ func (s *Store) ListDeployments() ([]model.Deployment, error) {
 
 	query := `SELECT id, pr_number, pr_title, repo_owner, repo_name, branch, commit_sha, author,
 		status, port, subdomain, preview_url, service_name, build_duration_sec,
-		health_status, error_message, created_at, updated_at
+		health_status, error_message, last_activity_at, auto_sleep_minutes,
+		cpu_percent, memory_mb, created_at, updated_at
 		FROM deployments ORDER BY created_at DESC`
 
 	rows, err := s.db.Query(query)
@@ -232,7 +262,8 @@ func (s *Store) ListDeployments() ([]model.Deployment, error) {
 		err := rows.Scan(
 			&d.ID, &d.PRNumber, &d.PRTitle, &d.RepoOwner, &d.RepoName, &d.Branch, &d.CommitSHA, &d.Author,
 			&statusStr, &d.Port, &d.Subdomain, &d.PreviewURL, &d.ServiceName, &d.BuildDurationSec,
-			&d.HealthStatus, &d.ErrorMessage, &d.CreatedAt, &d.UpdatedAt,
+			&d.HealthStatus, &d.ErrorMessage, &d.LastActivityAt, &d.AutoSleepMinutes,
+			&d.CPUPercent, &d.MemoryMB, &d.CreatedAt, &d.UpdatedAt,
 		)
 		if err != nil {
 			return nil, err
@@ -241,6 +272,24 @@ func (s *Store) ListDeployments() ([]model.Deployment, error) {
 		list = append(list, d)
 	}
 	return list, nil
+}
+
+// TouchActivity updates the last_activity_at timestamp for a deployment.
+func (s *Store) TouchActivity(id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec(`UPDATE deployments SET last_activity_at = ? WHERE id = ?`, time.Now().UTC(), id)
+	return err
+}
+
+// UpdateStats updates CPU and Memory metrics for a deployment.
+func (s *Store) UpdateStats(id string, cpuPercent, memoryMB float64) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	_, err := s.db.Exec(`UPDATE deployments SET cpu_percent = ?, memory_mb = ? WHERE id = ?`, cpuPercent, memoryMB, id)
+	return err
 }
 
 // DeleteDeployment removes a deployment record.
@@ -402,20 +451,25 @@ func (s *Store) GetLogs(deploymentID string, limit int) ([]string, error) {
 	return logs, nil
 }
 
-// CountDeployments returns count of active and total deployments.
-func (s *Store) CountDeployments() (active int, total int, err error) {
+// CountDeployments returns count of active, sleeping and total deployments.
+func (s *Store) CountDeployments() (active int, sleeping int, total int, err error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
 	err = s.db.QueryRow(`SELECT COUNT(*) FROM deployments`).Scan(&total)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
 
 	err = s.db.QueryRow(`SELECT COUNT(*) FROM deployments WHERE status IN ('running', 'building', 'pending')`).Scan(&active)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, 0, err
 	}
 
-	return active, total, nil
+	err = s.db.QueryRow(`SELECT COUNT(*) FROM deployments WHERE status = 'sleeping'`).Scan(&sleeping)
+	if err != nil {
+		return 0, 0, 0, err
+	}
+
+	return active, sleeping, total, nil
 }

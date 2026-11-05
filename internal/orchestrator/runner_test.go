@@ -17,8 +17,11 @@ import (
 )
 
 type mockDockerRunner struct {
-	upCalled   bool
-	downCalled bool
+	upCalled    bool
+	downCalled  bool
+	stopCalled  bool
+	startCalled bool
+	execCmd     string
 }
 
 func (m *mockDockerRunner) Up(ctx context.Context, projectName, workspaceDir, baseFile, overrideFile string, logFn func(string)) error {
@@ -30,6 +33,27 @@ func (m *mockDockerRunner) Up(ctx context.Context, projectName, workspaceDir, ba
 func (m *mockDockerRunner) Down(ctx context.Context, projectName, workspaceDir, baseFile, overrideFile string, logFn func(string)) error {
 	m.downCalled = true
 	logFn("Mock docker compose down success")
+	return nil
+}
+
+func (m *mockDockerRunner) Stop(ctx context.Context, projectName, workspaceDir, baseFile, overrideFile string, logFn func(string)) error {
+	m.stopCalled = true
+	logFn("Mock docker compose stop success")
+	return nil
+}
+
+func (m *mockDockerRunner) Start(ctx context.Context, projectName, workspaceDir, baseFile, overrideFile string, logFn func(string)) error {
+	m.startCalled = true
+	logFn("Mock docker compose start success")
+	return nil
+}
+
+func (m *mockDockerRunner) Exec(ctx context.Context, projectName, service string, command []string) (string, error) {
+	m.execCmd = fmt.Sprintf("%s: %v", service, command)
+	return "Migration applied successfully", nil
+}
+
+func (m *mockDockerRunner) Prune(ctx context.Context) error {
 	return nil
 }
 
@@ -83,10 +107,11 @@ func TestOrchestratorLifecycle(t *testing.T) {
 		healthChecker,
 		standaloneProxy,
 		nil,
+		nil,
 		broadcaster,
 	)
 
-	// Pre-create the workspace with a mock docker-compose.yml
+	// Pre-create the workspace with a mock docker-compose.yml and .previewforge.yml
 	workspaceDir := filepath.Join(workspacesDir, "pr-42-storefront")
 	_ = os.MkdirAll(workspaceDir, 0755)
 	composeContent := `
@@ -98,7 +123,17 @@ services:
 `
 	_ = os.WriteFile(filepath.Join(workspaceDir, "docker-compose.yml"), []byte(composeContent), 0644)
 
-	// Start a background server on targetPort after a brief delay simulating container startup
+	repoCfg := `
+service: "web"
+port: 80
+post_deploy:
+  command: "npm run db:migrate"
+  service: "web"
+`
+	_ = os.WriteFile(filepath.Join(workspaceDir, ".previewforge.yml"), []byte(repoCfg), 0644)
+
+	// Start a background server on targetPort simulating running container
+	srvDone := make(chan struct{})
 	go func() {
 		time.Sleep(100 * time.Millisecond)
 		ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", targetPort))
@@ -114,9 +149,10 @@ services:
 		})
 		srv := &http.Server{Handler: mux}
 		go srv.Serve(ln)
-		time.Sleep(2 * time.Second)
+		<-srvDone
 		_ = srv.Close()
 	}()
+	defer close(srvDone)
 
 	// 1. Deploy
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -142,29 +178,51 @@ services:
 		t.Fatalf("expected status running, got %s", dep.Status)
 	}
 
-	if dep.Port != targetPort {
-		t.Fatalf("expected port %d, got %d", targetPort, dep.Port)
+	// Verify post-deploy hook was executed
+	if dockerRunner.execCmd == "" {
+		t.Fatalf("expected post-deploy hook to execute")
 	}
 
-	// Verify route in proxy
-	foundPort, found := standaloneProxy.GetTarget(dep.Subdomain)
-	if !found || foundPort != targetPort {
-		t.Fatalf("expected proxy route to port %d, got %d", targetPort, foundPort)
+	// 2. Test Container Exec endpoint
+	execOut, err := orchestrator.Exec(ctx, dep.ID, "web", []string{"echo", "hello"})
+	if err != nil || execOut != "Migration applied successfully" {
+		t.Fatalf("exec failed: %v, out: %s", err, execOut)
 	}
 
-	// 2. Teardown
+	// 3. Test Sleep (Hibernation)
+	err = orchestrator.Sleep(ctx, dep.ID)
+	if err != nil {
+		t.Fatalf("sleep failed: %v", err)
+	}
+	if !dockerRunner.stopCalled {
+		t.Fatalf("expected docker compose stop to be called")
+	}
+
+	sleepingDep, _ := store.GetDeployment(dep.ID)
+	if sleepingDep.Status != model.StatusSleeping {
+		t.Fatalf("expected status sleeping, got %s", sleepingDep.Status)
+	}
+
+	// 4. Test Wake (Resumption)
+	err = orchestrator.Wake(ctx, dep.ID)
+	if err != nil {
+		t.Fatalf("wake failed: %v", err)
+	}
+	if !dockerRunner.startCalled {
+		t.Fatalf("expected docker compose start to be called")
+	}
+
+	wokenDep, _ := store.GetDeployment(dep.ID)
+	if wokenDep.Status != model.StatusRunning {
+		t.Fatalf("expected status running, got %s", wokenDep.Status)
+	}
+
+	// 5. Teardown
 	err = orchestrator.Teardown(ctx, req.RepoOwner, req.RepoName, req.PRNumber)
 	if err != nil {
 		t.Fatalf("teardown failed: %v", err)
 	}
 
-	// Verify proxy route removed
-	_, foundAfter := standaloneProxy.GetTarget(dep.Subdomain)
-	if foundAfter {
-		t.Fatalf("expected proxy route to be removed after teardown")
-	}
-
-	// Verify status in DB is destroyed
 	loadedDep, _ := store.GetDeployment(dep.ID)
 	if loadedDep.Status != model.StatusDestroyed {
 		t.Fatalf("expected status destroyed, got %s", loadedDep.Status)

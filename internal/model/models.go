@@ -9,6 +9,7 @@ const (
 	StatusPending   DeploymentStatus = "pending"
 	StatusBuilding  DeploymentStatus = "building"
 	StatusRunning   DeploymentStatus = "running"
+	StatusSleeping  DeploymentStatus = "sleeping"
 	StatusFailed    DeploymentStatus = "failed"
 	StatusStopped   DeploymentStatus = "stopped"
 	StatusDestroyed DeploymentStatus = "destroyed"
@@ -32,6 +33,10 @@ type Deployment struct {
 	BuildDurationSec int64            `json:"build_duration_sec"`
 	HealthStatus     string           `json:"health_status"`
 	ErrorMessage     string           `json:"error_message,omitempty"`
+	LastActivityAt   time.Time        `json:"last_activity_at"`
+	AutoSleepMinutes int              `json:"auto_sleep_minutes"`
+	CPUPercent       float64          `json:"cpu_percent"`
+	MemoryMB         float64          `json:"memory_mb"`
 	CreatedAt        time.Time        `json:"created_at"`
 	UpdatedAt        time.Time        `json:"updated_at"`
 }
@@ -48,6 +53,7 @@ type PortAllocation struct {
 type SystemStats struct {
 	DaemonUptimeSec   int64   `json:"daemon_uptime_sec"`
 	ActiveDeployments int     `json:"active_deployments"`
+	SleepingDeployments int   `json:"sleeping_deployments"`
 	TotalDeployments  int     `json:"total_deployments"`
 	PortPoolUsed      int     `json:"port_pool_used"`
 	PortPoolTotal     int     `json:"port_pool_total"`
@@ -56,6 +62,9 @@ type SystemStats struct {
 	HostRAMPercent    float64 `json:"host_ram_percent"`
 	HostCPUPercent    float64 `json:"host_cpu_percent"`
 	HostDiskPercent   float64 `json:"host_disk_percent"`
+	HostDiskFreeGB    float64 `json:"host_disk_free_gb"`
+	HostDiskTotalGB   float64 `json:"host_disk_total_gb"`
+	DiskLowAlert      bool    `json:"disk_low_alert"`
 }
 
 // SystemConfig stores persistent application runtime settings.
@@ -70,8 +79,20 @@ type SystemConfig struct {
 	WebhookSecret       string `json:"webhook_secret"`
 	WorkspacesDir       string `json:"workspaces_dir"`
 	IdleTimeoutMinutes  int    `json:"idle_timeout_minutes"`
+	AutoSleepMinutes    int    `json:"auto_sleep_minutes"` // Auto-sleep containers when inactive
 	RequireLabel        string `json:"require_label"`
 	AllowUntrustedForks bool   `json:"allow_untrusted_forks"`
+	BasicAuthUser       string `json:"basic_auth_user"`
+	BasicAuthPassword   string `json:"basic_auth_password"`
+	DiscordWebhookURL   string `json:"discord_webhook_url"`
+	SlackWebhookURL     string `json:"slack_webhook_url"`
+}
+
+// PostDeployHook defines commands to run inside the container stack before marking ready (e.g. database migrations).
+type PostDeployHook struct {
+	Command    string `yaml:"command" json:"command"`
+	Service    string `yaml:"service" json:"service"`
+	TimeoutSec int    `yaml:"timeout_sec" json:"timeout_sec"`
 }
 
 // RepoConfig represents an optional in-repo .previewforge.yml file.
@@ -82,4 +103,9 @@ type RepoConfig struct {
 	HealthPath  string            `yaml:"health_path" json:"health_path"`
 	Env         map[string]string `yaml:"env" json:"env"`
 	TimeoutSec  int               `yaml:"timeout_sec" json:"timeout_sec"`
+	PostDeploy  *PostDeployHook   `yaml:"post_deploy" json:"post_deploy"`
+	BasicAuth   *struct {
+		User     string `yaml:"user" json:"user"`
+		Password string `yaml:"password" json:"password"`
+	} `yaml:"basic_auth" json:"basic_auth"`
 }

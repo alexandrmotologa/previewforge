@@ -19,6 +19,9 @@ type ComposeInspection struct {
 	ContainerPort   int
 	HealthPath      string
 	Environment     map[string]string
+	PostDeploy      *model.PostDeployHook
+	AuthUser        string
+	AuthPassword    string
 }
 
 // ComposeBuilder inspects repositories and synthesizes Docker Compose overrides.
@@ -73,6 +76,8 @@ func (b *ComposeBuilder) InspectAndPrepare(workspaceDir, deploymentID string, pr
 	containerPort := 3000
 	healthPath := "/"
 	envVars := make(map[string]string)
+	var postDeploy *model.PostDeployHook
+	var authUser, authPass string
 
 	if repoConfig != nil {
 		if repoConfig.Service != "" {
@@ -86,6 +91,11 @@ func (b *ComposeBuilder) InspectAndPrepare(workspaceDir, deploymentID string, pr
 		}
 		for k, v := range repoConfig.Env {
 			envVars[k] = v
+		}
+		postDeploy = repoConfig.PostDeploy
+		if repoConfig.BasicAuth != nil {
+			authUser = repoConfig.BasicAuth.User
+			authPass = repoConfig.BasicAuth.Password
 		}
 	} else {
 		// Infer from compose file
@@ -130,6 +140,9 @@ func (b *ComposeBuilder) InspectAndPrepare(workspaceDir, deploymentID string, pr
 		ContainerPort:   containerPort,
 		HealthPath:      healthPath,
 		Environment:     envVars,
+		PostDeploy:      postDeploy,
+		AuthUser:        authUser,
+		AuthPassword:    authPass,
 	}, nil
 }
 
@@ -227,7 +240,7 @@ func parseSimpleRepoConfig(path string) *model.RepoConfig {
 	}
 
 	lines := strings.Split(string(content), "\n")
-	var inEnv bool
+	var inEnv, inPostDeploy, inBasicAuth bool
 
 	for _, line := range lines {
 		trimmed := strings.TrimSpace(line)
@@ -237,6 +250,25 @@ func parseSimpleRepoConfig(path string) *model.RepoConfig {
 
 		if strings.HasPrefix(trimmed, "env:") {
 			inEnv = true
+			inPostDeploy = false
+			inBasicAuth = false
+			continue
+		}
+		if strings.HasPrefix(trimmed, "post_deploy:") {
+			inPostDeploy = true
+			inEnv = false
+			inBasicAuth = false
+			cfg.PostDeploy = &model.PostDeployHook{}
+			continue
+		}
+		if strings.HasPrefix(trimmed, "basic_auth:") {
+			inBasicAuth = true
+			inEnv = false
+			inPostDeploy = false
+			cfg.BasicAuth = &struct {
+				User     string `yaml:"user" json:"user"`
+				Password string `yaml:"password" json:"password"`
+			}{}
 			continue
 		}
 
@@ -251,9 +283,33 @@ func parseSimpleRepoConfig(path string) *model.RepoConfig {
 			}
 		}
 
+		if inPostDeploy && cfg.PostDeploy != nil {
+			if strings.HasPrefix(trimmed, "command:") {
+				cfg.PostDeploy.Command = strings.Trim(strings.TrimSpace(strings.TrimPrefix(trimmed, "command:")), `"'`)
+			} else if strings.HasPrefix(trimmed, "service:") {
+				cfg.PostDeploy.Service = strings.Trim(strings.TrimSpace(strings.TrimPrefix(trimmed, "service:")), `"'`)
+			} else if strings.HasPrefix(trimmed, "timeout_sec:") {
+				if t, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(trimmed, "timeout_sec:"))); err == nil {
+					cfg.PostDeploy.TimeoutSec = t
+				}
+			} else if !strings.HasPrefix(line, " ") {
+				inPostDeploy = false
+			}
+		}
+
+		if inBasicAuth && cfg.BasicAuth != nil {
+			if strings.HasPrefix(trimmed, "user:") {
+				cfg.BasicAuth.User = strings.Trim(strings.TrimSpace(strings.TrimPrefix(trimmed, "user:")), `"'`)
+			} else if strings.HasPrefix(trimmed, "password:") {
+				cfg.BasicAuth.Password = strings.Trim(strings.TrimSpace(strings.TrimPrefix(trimmed, "password:")), `"'`)
+			} else if !strings.HasPrefix(line, " ") {
+				inBasicAuth = false
+			}
+		}
+
 		if strings.HasPrefix(trimmed, "compose_file:") {
 			cfg.ComposeFile = strings.Trim(strings.TrimSpace(strings.TrimPrefix(trimmed, "compose_file:")), `"'`)
-		} else if strings.HasPrefix(trimmed, "service:") {
+		} else if strings.HasPrefix(trimmed, "service:") && !inPostDeploy {
 			cfg.Service = strings.Trim(strings.TrimSpace(strings.TrimPrefix(trimmed, "service:")), `"'`)
 		} else if strings.HasPrefix(trimmed, "port:") {
 			if p, err := strconv.Atoi(strings.TrimSpace(strings.TrimPrefix(trimmed, "port:"))); err == nil {

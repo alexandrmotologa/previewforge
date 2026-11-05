@@ -20,6 +20,10 @@ type ContainerStats struct {
 type DockerRunner interface {
 	Up(ctx context.Context, projectName, workspaceDir, baseFile, overrideFile string, logFn func(string)) error
 	Down(ctx context.Context, projectName, workspaceDir, baseFile, overrideFile string, logFn func(string)) error
+	Stop(ctx context.Context, projectName, workspaceDir, baseFile, overrideFile string, logFn func(string)) error
+	Start(ctx context.Context, projectName, workspaceDir, baseFile, overrideFile string, logFn func(string)) error
+	Exec(ctx context.Context, projectName, service string, command []string) (string, error)
+	Prune(ctx context.Context) error
 	Stats(ctx context.Context, projectName string) (*ContainerStats, error)
 }
 
@@ -71,6 +75,64 @@ func (d *SystemDockerRunner) Down(ctx context.Context, projectName, workspaceDir
 	return streamCommandOutput(cmd, logFn)
 }
 
+// Stop temporarily halts containers without deleting volumes (hibernation / auto-sleep).
+func (d *SystemDockerRunner) Stop(ctx context.Context, projectName, workspaceDir, baseFile, overrideFile string, logFn func(string)) error {
+	args := []string{"compose", "-p", projectName, "-f", baseFile}
+	if overrideFile != "" {
+		args = append(args, "-f", overrideFile)
+	}
+	args = append(args, "stop")
+
+	logFn(fmt.Sprintf("Hibernating stack: docker %s", strings.Join(args, " ")))
+
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd.Dir = workspaceDir
+
+	return streamCommandOutput(cmd, logFn)
+}
+
+// Start resumes a hibernated stack without rebuilding images (wake-on-request).
+func (d *SystemDockerRunner) Start(ctx context.Context, projectName, workspaceDir, baseFile, overrideFile string, logFn func(string)) error {
+	args := []string{"compose", "-p", projectName, "-f", baseFile}
+	if overrideFile != "" {
+		args = append(args, "-f", overrideFile)
+	}
+	args = append(args, "start")
+
+	logFn(fmt.Sprintf("Waking up stack: docker %s", strings.Join(args, " ")))
+
+	cmd := exec.CommandContext(ctx, "docker", args...)
+	cmd.Dir = workspaceDir
+
+	return streamCommandOutput(cmd, logFn)
+}
+
+// Exec runs a diagnostic or migration command inside a specific container service.
+func (d *SystemDockerRunner) Exec(ctx context.Context, projectName, service string, command []string) (string, error) {
+	args := append([]string{"compose", "-p", projectName, "exec", "-T", service}, command...)
+	cmd := exec.CommandContext(ctx, "docker", args...)
+
+	out, err := cmd.CombinedOutput()
+	outputStr := string(out)
+	if err != nil {
+		return outputStr, fmt.Errorf("exec failed: %s: %w", outputStr, err)
+	}
+	return outputStr, nil
+}
+
+// Prune cleans up dangling images and old builder cache to recover disk space.
+func (d *SystemDockerRunner) Prune(ctx context.Context) error {
+	// Prune dangling images
+	imgCmd := exec.CommandContext(ctx, "docker", "image", "prune", "-f")
+	_ = imgCmd.Run()
+
+	// Prune build cache older than 48h
+	buildCmd := exec.CommandContext(ctx, "docker", "builder", "prune", "-f", "--filter", "until=48h")
+	_ = buildCmd.Run()
+
+	return nil
+}
+
 // Stats returns aggregated resource usage for containers belonging to the project.
 func (d *SystemDockerRunner) Stats(ctx context.Context, projectName string) (*ContainerStats, error) {
 	cmd := exec.CommandContext(ctx, "docker", "ps", "--filter", fmt.Sprintf("label=com.docker.compose.project=%s", projectName), "--format", "{{.ID}}")
@@ -104,7 +166,6 @@ func (d *SystemDockerRunner) Stats(ctx context.Context, projectName string) (*Co
 			fmt.Sscanf(cpuStr, "%f", &cpuVal)
 			totalCPU += cpuVal
 
-			// Memory usage format: "42.5MiB / 1.95GiB"
 			memParts := strings.Split(parts[1], "/")
 			if len(memParts) > 0 {
 				memStr := strings.TrimSpace(memParts[0])

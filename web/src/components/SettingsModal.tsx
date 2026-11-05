@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { X, Copy, Check, ShieldCheck, Globe, Key, Sliders, ExternalLink } from 'lucide-react';
+import { X, Copy, Check, ShieldCheck, Globe, Key, Sliders, ExternalLink, Moon, Bell, Lock } from 'lucide-react';
 import { SystemConfig } from '../types';
 
 interface SettingsModalProps {
@@ -31,7 +31,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, config, on
             </div>
             <div>
               <h2 className="text-base font-semibold text-slate-100">System Configuration</h2>
-              <p className="text-xs text-slate-400">Daemon runtime settings and webhook configuration</p>
+              <p className="text-xs text-slate-400">Supervisor runtime settings, security and integrations</p>
             </div>
           </div>
           <button onClick={onClose} className="p-1 rounded-md text-slate-400 hover:text-white">
@@ -93,11 +93,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, config, on
 
             <div className="bg-slate-950/50 border border-slate-800 rounded-lg p-3">
               <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1">
-                <Sliders className="w-3.5 h-3.5 text-slate-500" />
-                <span>Proxy Engine</span>
+                <Moon className="w-3.5 h-3.5 text-slate-500" />
+                <span>Auto-Sleep Hibernation</span>
               </div>
-              <div className="text-xs font-medium text-slate-200 capitalize">
-                {config.proxy_mode} Mode
+              <div className="text-xs font-medium text-slate-200">
+                {config.auto_sleep_minutes > 0 ? (
+                  <span className="text-emerald-400">Active ({config.auto_sleep_minutes}m idle)</span>
+                ) : (
+                  <span className="text-slate-400">Disabled</span>
+                )}
               </div>
             </div>
 
@@ -125,6 +129,34 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({ isOpen, config, on
                   <span className="text-emerald-400">Connected</span>
                 ) : (
                   <span className="text-slate-400">Read-Only (No token)</span>
+                )}
+              </div>
+            </div>
+
+            <div className="bg-slate-950/50 border border-slate-800 rounded-lg p-3">
+              <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1">
+                <Lock className="w-3.5 h-3.5 text-slate-500" />
+                <span>Password Protection</span>
+              </div>
+              <div className="text-xs font-medium">
+                {config.has_basic_auth ? (
+                  <span className="text-emerald-400">Basic Auth Active</span>
+                ) : (
+                  <span className="text-slate-400">Public (No password)</span>
+                )}
+              </div>
+            </div>
+
+            <div className="bg-slate-950/50 border border-slate-800 rounded-lg p-3">
+              <div className="flex items-center gap-1.5 text-xs text-slate-400 mb-1">
+                <Bell className="w-3.5 h-3.5 text-slate-500" />
+                <span>Team Chat Webhooks</span>
+              </div>
+              <div className="text-xs font-medium">
+                {config.has_discord_webhook || config.has_slack_webhook ? (
+                  <span className="text-emerald-400">Connected</span>
+                ) : (
+                  <span className="text-slate-400">Not configured</span>
                 )}
               </div>
             </div>

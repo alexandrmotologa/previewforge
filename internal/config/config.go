@@ -68,6 +68,13 @@ func DefaultConfig() model.SystemConfig {
 		}
 	}
 
+	autoSleep := 60 // 60 minutes default idle hibernation
+	if val := os.Getenv("PREVIEWFORGE_AUTO_SLEEP"); val != "" {
+		if s, err := strconv.Atoi(val); err == nil && s >= 0 {
+			autoSleep = s
+		}
+	}
+
 	return model.SystemConfig{
 		BaseDomain:          baseDomain,
 		PublicPort:          port,
@@ -79,7 +86,12 @@ func DefaultConfig() model.SystemConfig {
 		WebhookSecret:       os.Getenv("WEBHOOK_SECRET"),
 		WorkspacesDir:       workspacesDir,
 		IdleTimeoutMinutes:  idleTimeout,
+		AutoSleepMinutes:    autoSleep,
 		RequireLabel:        os.Getenv("PREVIEWFORGE_REQUIRE_LABEL"),
 		AllowUntrustedForks: os.Getenv("PREVIEWFORGE_ALLOW_FORKS") == "true",
+		BasicAuthUser:       os.Getenv("PREVIEWFORGE_AUTH_USER"),
+		BasicAuthPassword:   os.Getenv("PREVIEWFORGE_AUTH_PASS"),
+		DiscordWebhookURL:   os.Getenv("DISCORD_WEBHOOK_URL"),
+		SlackWebhookURL:     os.Getenv("SLACK_WEBHOOK_URL"),
 	}
 }

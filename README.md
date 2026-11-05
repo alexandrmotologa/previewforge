@@ -1,6 +1,6 @@
 # PreviewForge
 
-Self-hosted ephemeral pull request preview supervisor and reverse proxy daemon. Runs on a single Linux or VPS server ($5 to $10/month), receives GitHub webhooks, builds Docker Compose stacks in isolated networks with dynamic port multiplexing, configures HTTPS subdomains via Caddy or the built-in proxy, and publishes sticky status comments on pull requests. On merge or close, it halts containers and reclaims disk space.
+Self-hosted ephemeral pull request preview supervisor and reverse proxy daemon. Runs on a single Linux or VPS server ($5 to $10/month), receives GitHub webhooks, builds Docker Compose stacks in isolated networks with dynamic port multiplexing, configures HTTPS subdomains via Caddy or the built-in proxy, and publishes sticky status comments on pull requests. Features auto-sleep container hibernation, wake-on-request proxying, post-deploy migration hooks, disk space guard, and an interactive web studio. On merge or close, it halts containers and reclaims disk space.
 
 ```
 +-----------------------------------------------------------------------------------+
@@ -13,7 +13,8 @@ Self-hosted ephemeral pull request preview supervisor and reverse proxy daemon. 
 |    GitHub Webhook Ingestion     |                 |   Docker Compose Orchestrator |
 |  * pull_request.opened / sync   |                 |  * Isolated Docker Networks   |
 |  * pull_request.closed (clean)  |                 |  * Dynamic Port Multiplexing  |
-|  * Webhook Secret Verification  |                 |  * Volume & Image Pruner      |
+|  * Webhook Secret Verification  |                 |  * Post-Deploy Migration Hook |
+|  * GitHub Deployments API       |                 |  * Disk Guard Auto-Pruner     |
 +-------+-------------------------+                 +-----------------------+-------+
         |                                                                   |
         +---------------------------------+---------------------------------+
@@ -21,22 +22,25 @@ Self-hosted ephemeral pull request preview supervisor and reverse proxy daemon. 
                         +-----------------v-----------------+
                         |   Dynamic Reverse Proxy & SSL     |
                         |  * Embedded Caddy / ACME Router   |
+                        |  * Auto-Sleep & Wake-on-Request   |
+                        |  * Basic Auth & Anti-Index Robots |
                         |  * pr-{id}.preview.domain.com     |
-                        |  * Automatic Let's Encrypt TLS    |
                         +-----------------+-----------------+
                                           |
                         +-----------------v-----------------+
-                        |    GitHub PR Comment Publisher    |
-                        |  * Octokit Deployment Comments    |
-                        |  * Build Log Link & Live URL      |
-                        |  * Commit SHA Verification Status |
+                        |    Status & Team Notifications    |
+                        |  * Sticky GitHub PR Comments      |
+                        |  * Native GitHub Deployments API  |
+                        |  * Discord & Slack Webhooks       |
                         +-----------------+-----------------+
                                           |
                         +-----------------v-----------------+
                         |   Interactive Web Studio (:9850)  |
-                        |  * Active Environments Matrix     |
+                        |  * Active & Hibernated Matrix     |
                         |  * Per-Container RAM / CPU Gauges |
-                        |  * 1-Click Manual Teardown        |
+                        |  * Live SSE Streaming Logs        |
+                        |  * Browser Container Exec Console |
+                        |  * 1-Click Manual Teardown & Wake |
                         +-----------------------------------+
 ```
 
@@ -45,16 +49,26 @@ Self-hosted ephemeral pull request preview supervisor and reverse proxy daemon. 
 ## Key Capabilities
 
 - **Single-Binary Deployment**: Shipped as a self-contained Go binary with an embedded React 19 web dashboard and pure-Go SQLite storage engine. No external database or runtime dependencies required.
-- **Automated Pull Request Lifecycle**:
-  - `pull_request.opened` / `synchronize`: Clones the PR branch, parses `docker-compose.yml`, reserves an unused host port, builds the container stack, and routes an isolated subdomain.
-  - `pull_request.closed`: Stops containers, removes networks and ephemeral volumes, prunes locally built images, and frees the allocated host port.
+- **Auto-Sleep & Wake-on-Request (Scale-to-Zero)**:
+  - Automatically hibernates preview stacks that receive no HTTP traffic for a configurable duration (default 60 minutes), freeing VPS memory.
+  - When traffic hits a hibernated preview (`pr-42.preview.domain.com`), the reverse proxy serves an auto-reloading wake splash page, resumes containers in 1 to 2 seconds, and connects the user.
 - **Dynamic Port Multiplexing**: Allocates host ports across a designated range (default `31000` to `35000`) with persistent tracking in SQLite to prevent port collisions across daemon restarts.
 - **Dual Reverse Proxy Support**:
   - Standalone mode: Built-in Go HTTP reverse proxy with host-based dynamic routing, WebSocket upgrade support, and custom error handling.
   - Caddy mode: Directly manages Caddy reverse proxy routes through the Caddy Admin JSON API (`http://127.0.0.1:2019`).
-- **Sticky GitHub PR Comments**: Updates a single markdown comment on each pull request discussion thread with commit SHA, build duration, and live URL, avoiding notification spam.
-- **Interactive Web Studio**: Real-time browser dashboard displaying active preview environments, CPU and memory gauges, live Server-Sent Events (SSE) build logs, and manual teardown controls.
-- **Automated Resource Reaper**: Periodic garbage collection loop that terminates abandoned preview stacks exceeding a configurable idle timeout (default 24 hours).
+- **Security & Privacy Controls**:
+  - Injects `X-Robots-Tag: noindex, nofollow, noarchive` headers on all preview responses to prevent search engine indexing.
+  - Supports Basic Auth password protection globally or per-repository via `.previewforge.yml` or `?preview_key=...` bypass.
+- **Post-Deploy Migration Hooks**: Executes database migrations (e.g. `npm run db:migrate` or `prisma migrate deploy`) inside the target container service before marking the preview healthy.
+- **Native GitHub Deployments API**: Registers official GitHub Deployments with active environment links and updates sticky markdown PR comments with commit SHA, duration, and preview URL.
+- **Team Webhook Notifications**: Sends real-time build and teardown cards to Discord or Slack channels.
+- **Disk Space Guard**: Monitors host storage in real-time and proactively triggers Docker build cache and image prunes when free space falls below safety thresholds.
+- **Interactive Web Studio**:
+  - Real-time browser dashboard displaying active and hibernated preview environments.
+  - CPU and memory consumption per container stack.
+  - Live Server-Sent Events (SSE) build logs.
+  - In-browser Container Exec console for running diagnostic commands (`env`, `ls`, `npm list`, `df -h`) without SSH access.
+  - Manual sleep, wake, rebuild, and teardown buttons.
 
 ---
 
@@ -77,6 +91,8 @@ services:
       - PREVIEWFORGE_DOMAIN=preview.yourdomain.com
       - GITHUB_TOKEN=ghp_yourpersonalaccesstoken
       - WEBHOOK_SECRET=your_webhook_hmac_secret
+      - PREVIEWFORGE_AUTO_SLEEP=60
+      - DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - ./data:/data
@@ -97,7 +113,8 @@ Download the compiled binary and start the supervisor:
   --domain preview.yourdomain.com \
   --port 9850 \
   --github-token ghp_yourpersonalaccesstoken \
-  --webhook-secret your_webhook_hmac_secret
+  --webhook-secret your_webhook_hmac_secret \
+  --auto-sleep 60
 ```
 
 Access the Web Studio dashboard at `http://localhost:9850`.
@@ -109,7 +126,7 @@ Access the Web Studio dashboard at `http://localhost:9850`.
 PreviewForge provides management subcommands:
 
 ```bash
-# Start the supervisor daemon and web studio
+# Start the supervisor daemon, web studio, and proxy
 previewforge serve --domain preview.yourdomain.com --port 9850
 
 # List active preview environments
@@ -151,13 +168,25 @@ Synthesizes docker-compose.previewforge.override.yml
 Executes docker compose up -d --build
   │
   ▼
+Executes post-deploy migration hook (e.g. npm run db:migrate)
+  │
+  ▼
 Polls http://127.0.0.1:31042/ for readiness
   │
   ▼
 Registers route pr-42.preview.yourdomain.com -> 127.0.0.1:31042
   │
   ▼
-Posts sticky comment with live link on GitHub PR
+Posts sticky comment, native GitHub deployment, and team webhook
+  │
+  ▼
+Inactivity timer triggers Auto-Sleep (docker compose stop)
+  │
+  ▼
+Next HTTP request wakes stack in 1-2 seconds (docker compose start)
+  │
+  ▼
+PR merge/close triggers docker compose down -v and frees port
 ```
 
 ---
@@ -179,6 +208,17 @@ port: 3000
 # Path polled during healthcheck verification (default: /)
 health_path: "/api/health"
 
+# Post-deploy command executed inside the container before marking ready
+post_deploy:
+  command: "npx prisma migrate deploy"
+  service: "web"
+  timeout_sec: 120
+
+# Optional password protection for preview subdomains
+basic_auth:
+  user: "tester"
+  password: "stagingpassword123"
+
 # Custom environment variables injected into preview containers
 env:
   NODE_ENV: "production"
@@ -189,8 +229,8 @@ env:
 
 ## Architecture and Documentation
 
-- [Architecture Deep Dive](docs/ARCHITECTURE.md): Container isolation, port ledger, and proxy design.
-- [Configuration Guide](docs/CONFIGURATION.md): Complete list of environment variables, CLI flags, and webhook setup.
+- [Architecture Deep Dive](docs/ARCHITECTURE.md): Container isolation, hibernation state machine, port ledger, and proxy design.
+- [Configuration Guide](docs/CONFIGURATION.md): Complete list of environment variables, CLI flags, notifications, and webhook setup.
 - [Caddy and Wildcard TLS](docs/CADDY_INTEGRATION.md): Wildcard DNS, Cloudflare DNS challenge, and Caddy Admin API.
 
 ---

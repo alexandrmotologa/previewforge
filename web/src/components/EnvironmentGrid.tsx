@@ -5,9 +5,11 @@ import { Layers } from 'lucide-react';
 
 interface EnvironmentGridProps {
   deployments: Deployment[];
-  onViewLogs: (dep: Deployment) => void;
+  onViewLogs: (dep: Deployment, initialTab?: 'logs' | 'exec') => void;
   onRebuild: (id: string) => void;
   onDestroy: (id: string) => void;
+  onSleep: (id: string) => void;
+  onWake: (id: string) => void;
 }
 
 export const EnvironmentGrid: React.FC<EnvironmentGridProps> = ({
@@ -15,14 +17,18 @@ export const EnvironmentGrid: React.FC<EnvironmentGridProps> = ({
   onViewLogs,
   onRebuild,
   onDestroy,
+  onSleep,
+  onWake,
 }) => {
-  const [filter, setFilter] = useState<'all' | 'active' | 'closed'>('all');
+  const [filter, setFilter] = useState<'all' | 'active' | 'sleeping' | 'closed'>('all');
   const [search, setSearch] = useState('');
 
   const filteredDeployments = deployments.filter((d) => {
     // Status filter
     if (filter === 'active') {
       if (d.status !== 'running' && d.status !== 'building') return false;
+    } else if (filter === 'sleeping') {
+      if (d.status !== 'sleeping') return false;
     } else if (filter === 'closed') {
       if (d.status !== 'stopped' && d.status !== 'destroyed' && d.status !== 'failed') return false;
     }
@@ -67,6 +73,16 @@ export const EnvironmentGrid: React.FC<EnvironmentGridProps> = ({
             Active ({deployments.filter((d) => d.status === 'running' || d.status === 'building').length})
           </button>
           <button
+            onClick={() => setFilter('sleeping')}
+            className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
+              filter === 'sleeping'
+                ? 'bg-slate-800 text-white shadow-sm'
+                : 'text-slate-400 hover:text-slate-200'
+            }`}
+          >
+            Hibernated ({deployments.filter((d) => d.status === 'sleeping').length})
+          </button>
+          <button
             onClick={() => setFilter('closed')}
             className={`px-3 py-1.5 rounded-md text-xs font-medium transition-colors ${
               filter === 'closed'
@@ -109,6 +125,8 @@ export const EnvironmentGrid: React.FC<EnvironmentGridProps> = ({
               onViewLogs={onViewLogs}
               onRebuild={onRebuild}
               onDestroy={onDestroy}
+              onSleep={onSleep}
+              onWake={onWake}
             />
           ))}
         </div>

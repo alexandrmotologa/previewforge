@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"runtime"
 	"strings"
@@ -118,6 +119,102 @@ func (h *APIHandler) RebuildDeployment(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "rebuild_queued", "id": id})
 }
 
+func (h *APIHandler) SleepDeployment(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	id := extractID(r.URL.Path, "/api/deployments/")
+	id = strings.TrimSuffix(id, "/sleep")
+
+	if h.orchestrator == nil {
+		http.Error(w, "Orchestrator unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		_ = h.orchestrator.Sleep(ctx, id)
+	}()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "sleep_queued", "id": id})
+}
+
+func (h *APIHandler) WakeDeployment(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	id := extractID(r.URL.Path, "/api/deployments/")
+	id = strings.TrimSuffix(id, "/wake")
+
+	if h.orchestrator == nil {
+		http.Error(w, "Orchestrator unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		_ = h.orchestrator.Wake(ctx, id)
+	}()
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(map[string]string{"status": "wake_queued", "id": id})
+}
+
+// ExecRequest payload for container diagnostic command execution.
+type ExecRequest struct {
+	Command []string `json:"command"`
+	Service string   `json:"service"`
+}
+
+func (h *APIHandler) ExecContainer(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	id := extractID(r.URL.Path, "/api/deployments/")
+	id = strings.TrimSuffix(id, "/exec")
+
+	var req ExecRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "Invalid JSON: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if len(req.Command) == 0 {
+		http.Error(w, "Command cannot be empty", http.StatusBadRequest)
+		return
+	}
+
+	if h.orchestrator == nil {
+		http.Error(w, "Orchestrator unavailable", http.StatusServiceUnavailable)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	output, err := h.orchestrator.Exec(ctx, id, req.Service, req.Command)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(map[string]any{"error": err.Error(), "output": output})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{"output": output})
+}
+
 func (h *APIHandler) DestroyDeployment(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodDelete && r.Method != http.MethodPost {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -172,7 +269,7 @@ func (h *APIHandler) GetLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *APIHandler) GetSystemStats(w http.ResponseWriter, r *http.Request) {
-	active, total, _ := h.store.CountDeployments()
+	active, sleeping, total, _ := h.store.CountDeployments()
 	allocs, _ := h.store.ListPortAllocations()
 
 	totalPorts := h.config.PortRangeEnd - h.config.PortRangeStart + 1
@@ -184,17 +281,23 @@ func (h *APIHandler) GetSystemStats(w http.ResponseWriter, r *http.Request) {
 	runtime.ReadMemStats(&m)
 	allocMB := float64(m.Alloc) / 1024 / 1024
 
+	disk := orchestrator.GetDiskUsage(h.config.WorkspacesDir)
+
 	stats := model.SystemStats{
-		DaemonUptimeSec:   int64(time.Since(h.startTime).Seconds()),
-		ActiveDeployments: active,
-		TotalDeployments:  total,
-		PortPoolUsed:      len(allocs),
-		PortPoolTotal:     totalPorts,
-		HostRAMTotalMB:    4096.0,
-		HostRAMUsedMB:     allocMB,
-		HostRAMPercent:    (allocMB / 4096.0) * 100,
-		HostCPUPercent:    0.8,
-		HostDiskPercent:   14.2,
+		DaemonUptimeSec:     int64(time.Since(h.startTime).Seconds()),
+		ActiveDeployments:   active,
+		SleepingDeployments: sleeping,
+		TotalDeployments:    total,
+		PortPoolUsed:        len(allocs),
+		PortPoolTotal:       totalPorts,
+		HostRAMTotalMB:      4096.0,
+		HostRAMUsedMB:       allocMB,
+		HostRAMPercent:      (allocMB / 4096.0) * 100,
+		HostCPUPercent:      0.8,
+		HostDiskPercent:     disk.Percent,
+		HostDiskFreeGB:      disk.FreeGB,
+		HostDiskTotalGB:     disk.TotalGB,
+		DiskLowAlert:        disk.Percent > 85.0 || (disk.TotalGB > 0 && disk.FreeGB < 3.0),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -210,10 +313,14 @@ func (h *APIHandler) GetSystemConfig(w http.ResponseWriter, r *http.Request) {
 		"port_range_end":        h.config.PortRangeEnd,
 		"workspaces_dir":        h.config.WorkspacesDir,
 		"idle_timeout_minutes":  h.config.IdleTimeoutMinutes,
+		"auto_sleep_minutes":    h.config.AutoSleepMinutes,
 		"require_label":         h.config.RequireLabel,
 		"has_github_token":      h.config.GitHubToken != "",
 		"has_webhook_secret":    h.config.WebhookSecret != "",
 		"allow_untrusted_forks": h.config.AllowUntrustedForks,
+		"has_basic_auth":        h.config.BasicAuthUser != "",
+		"has_discord_webhook":   h.config.DiscordWebhookURL != "",
+		"has_slack_webhook":     h.config.SlackWebhookURL != "",
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -295,8 +402,8 @@ func (h *APIHandler) SimulatorDeploy(w http.ResponseWriter, r *http.Request) {
 		"status":    "queued",
 		"pr_number": simReq.PRNumber,
 		"repo":      simReq.RepoOwner + "/" + simReq.RepoName,
-		"subdomain": "pr-" + strings.TrimSpace(string(rune(simReq.PRNumber))) + "." + expectedSubdomain,
-		"id":        "pr-" + strings.TrimSpace(string(rune(simReq.PRNumber))) + "-" + deploymentID,
+		"subdomain": fmt.Sprintf("pr-%d.%s", simReq.PRNumber, expectedSubdomain),
+		"id":        fmt.Sprintf("pr-%d-%s", simReq.PRNumber, deploymentID),
 	})
 }
 

@@ -35,16 +35,36 @@ func NewCaddyManager(adminURL string) *CaddyManager {
 	}
 }
 
+// SetWakeHandler attaches wake callback.
+func (c *CaddyManager) SetWakeHandler(fn func(deploymentID string) error) {
+	c.fallback.SetWakeHandler(fn)
+}
+
+// SetActivityHandler attaches activity callback.
+func (c *CaddyManager) SetActivityHandler(fn func(deploymentID string)) {
+	c.fallback.SetActivityHandler(fn)
+}
+
 // RegisterRoute registers the subdomain in the local routing table and pushes to Caddy.
 func (c *CaddyManager) RegisterRoute(subdomain string, targetPort int) error {
+	return c.RegisterRouteWithConfig(subdomain, RouteConfig{TargetPort: targetPort})
+}
+
+// RegisterRouteWithConfig registers the route with extended options.
+func (c *CaddyManager) RegisterRouteWithConfig(subdomain string, cfg RouteConfig) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	cleanHost := strings.ToLower(strings.TrimSpace(subdomain))
-	c.routes[cleanHost] = targetPort
-	_ = c.fallback.RegisterRoute(cleanHost, targetPort)
+	c.routes[cleanHost] = cfg.TargetPort
+	_ = c.fallback.RegisterRouteWithConfig(cleanHost, cfg)
 
 	return c.syncToCaddy()
+}
+
+// SetRouteSleeping updates hibernation status.
+func (c *CaddyManager) SetRouteSleeping(subdomain string, sleeping bool) {
+	c.fallback.SetRouteSleeping(subdomain, sleeping)
 }
 
 // RemoveRoute clears the subdomain from the routing table and synchronizes with Caddy.
@@ -62,6 +82,11 @@ func (c *CaddyManager) RemoveRoute(subdomain string) error {
 // GetTarget checks the fallback proxy table.
 func (c *CaddyManager) GetTarget(host string) (int, bool) {
 	return c.fallback.GetTarget(host)
+}
+
+// GetRouteConfig returns route config.
+func (c *CaddyManager) GetRouteConfig(host string) (RouteConfig, bool) {
+	return c.fallback.GetRouteConfig(host)
 }
 
 // ServeHTTP delegates to the embedded reverse proxy handler.
@@ -109,7 +134,6 @@ func (c *CaddyManager) syncToCaddy() error {
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
-		// Log warning: Caddy is optional or may be down, internal proxy handles traffic
 		log.Printf("[caddy] Warning: Caddy Admin API at %s unreachable (%v). Traffic routed via internal proxy.", c.adminURL, err)
 		return nil
 	}

@@ -11,27 +11,25 @@ import (
 	"github.com/alexandrmotologa/previewforge/internal/storage"
 )
 
-// Reaper runs background sweeps to terminate abandoned or timed-out preview stacks.
+// Reaper runs background sweeps to terminate abandoned stacks, hibernate idle stacks, and prune disk space.
 type Reaper struct {
 	store         *storage.Store
-	deployer      webhookDeployer
+	orchestrator  *Orchestrator
+	dockerRunner  DockerRunner
 	workspacesDir string
 	idleTimeout   time.Duration
 	stopChan      chan struct{}
 }
 
-type webhookDeployer interface {
-	Teardown(ctx context.Context, repoOwner, repoName string, prNumber int) error
-}
-
 // NewReaper constructs a Reaper instance.
-func NewReaper(store *storage.Store, deployer webhookDeployer, workspacesDir string, idleTimeoutMinutes int) *Reaper {
+func NewReaper(store *storage.Store, orch *Orchestrator, dockerRunner DockerRunner, workspacesDir string, idleTimeoutMinutes int) *Reaper {
 	if idleTimeoutMinutes <= 0 {
 		idleTimeoutMinutes = 1440 // 24 hours default
 	}
 	return &Reaper{
 		store:         store,
-		deployer:      deployer,
+		orchestrator:  orch,
+		dockerRunner:  dockerRunner,
 		workspacesDir: workspacesDir,
 		idleTimeout:   time.Duration(idleTimeoutMinutes) * time.Minute,
 		stopChan:      make(chan struct{}),
@@ -41,7 +39,7 @@ func NewReaper(store *storage.Store, deployer webhookDeployer, workspacesDir str
 // Start launches the background reaper ticker.
 func (r *Reaper) Start(interval time.Duration) {
 	if interval <= 0 {
-		interval = 10 * time.Minute
+		interval = 5 * time.Minute
 	}
 	go func() {
 		ticker := time.NewTicker(interval)
@@ -53,6 +51,8 @@ func (r *Reaper) Start(interval time.Duration) {
 				return
 			case <-ticker.C:
 				r.sweepStaleDeployments()
+				r.sweepIdleSleepingDeployments()
+				r.sweepDiskSpaceGuard()
 				r.sweepOrphanedWorkspaces()
 			}
 		}
@@ -74,12 +74,47 @@ func (r *Reaper) sweepStaleDeployments() {
 	cutoff := time.Now().UTC().Add(-r.idleTimeout)
 
 	for _, dep := range deployments {
-		if (dep.Status == model.StatusRunning || dep.Status == model.StatusBuilding) && dep.UpdatedAt.Before(cutoff) {
+		if (dep.Status == model.StatusRunning || dep.Status == model.StatusSleeping || dep.Status == model.StatusBuilding) && dep.UpdatedAt.Before(cutoff) {
 			log.Printf("[reaper] Stale deployment %s (PR #%d) exceeded idle timeout of %s. Reaping...", dep.ID, dep.PRNumber, r.idleTimeout)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			_ = r.deployer.Teardown(ctx, dep.RepoOwner, dep.RepoName, dep.PRNumber)
+			_ = r.orchestrator.Teardown(ctx, dep.RepoOwner, dep.RepoName, dep.PRNumber)
 			cancel()
 		}
+	}
+}
+
+func (r *Reaper) sweepIdleSleepingDeployments() {
+	deployments, err := r.store.ListDeployments()
+	if err != nil {
+		return
+	}
+
+	for _, dep := range deployments {
+		if dep.Status == model.StatusRunning && dep.AutoSleepMinutes > 0 {
+			idleDuration := time.Duration(dep.AutoSleepMinutes) * time.Minute
+			if time.Since(dep.LastActivityAt) > idleDuration {
+				log.Printf("[reaper] Deployment %s (PR #%d) inactive for %s. Hibernating...", dep.ID, dep.PRNumber, idleDuration)
+				ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				_ = r.orchestrator.Sleep(ctx, dep.ID)
+				cancel()
+			}
+		}
+	}
+}
+
+func (r *Reaper) sweepDiskSpaceGuard() {
+	if r.workspacesDir == "" || r.dockerRunner == nil {
+		return
+	}
+
+	usage := GetDiskUsage(r.workspacesDir)
+	// If disk utilization exceeds 85% or free disk is below 3GB, trigger auto-prune
+	if usage.Percent > 85.0 || (usage.TotalGB > 0 && usage.FreeGB < 3.0) {
+		log.Printf("[reaper] Disk Space Alert: %.1f%% used (%.1f GB free). Running proactive Docker cache & image prune...",
+			usage.Percent, usage.FreeGB)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		_ = r.dockerRunner.Prune(ctx)
+		cancel()
 	}
 }
 
@@ -100,7 +135,7 @@ func (r *Reaper) sweepOrphanedWorkspaces() {
 
 	activeIDs := make(map[string]bool)
 	for _, d := range deployments {
-		if d.Status == model.StatusRunning || d.Status == model.StatusBuilding {
+		if d.Status == model.StatusRunning || d.Status == model.StatusSleeping || d.Status == model.StatusBuilding {
 			activeIDs[d.ID] = true
 		}
 	}
@@ -110,7 +145,6 @@ func (r *Reaper) sweepOrphanedWorkspaces() {
 			dirName := entry.Name()
 			if !activeIDs[dirName] {
 				fullPath := filepath.Join(r.workspacesDir, dirName)
-				// Only remove if older than 2 hours to avoid race conditions with in-flight clones
 				if info, err := os.Stat(fullPath); err == nil && time.Since(info.ModTime()) > 2*time.Hour {
 					_ = os.RemoveAll(fullPath)
 					log.Printf("[reaper] Pruned orphaned workspace: %s", fullPath)

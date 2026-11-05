@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/alexandrmotologa/previewforge/internal/model"
 	"github.com/alexandrmotologa/previewforge/internal/proxy"
@@ -47,12 +48,33 @@ func TestServerEndpoints(t *testing.T) {
 		PublicPort:     9850,
 		PortRangeStart: 31000,
 		PortRangeEnd:   32000,
+		WorkspacesDir:  tempDir,
 	}
 
 	standaloneProxy := proxy.NewStandaloneProxy()
 	webhookHandler := webhook.NewHandler(&mockOrchDeployer{}, "", "", false)
 
 	server := NewServer(cfg, store, nil, standaloneProxy, webhookHandler)
+
+	// Pre-populate a running deployment
+	_ = store.SaveDeployment(&model.Deployment{
+		ID:             "pr-10-api-service",
+		PRNumber:       10,
+		PRTitle:        "Feature: Add GraphQL",
+		RepoOwner:      "alexandrmotologa",
+		RepoName:       "api-service",
+		Branch:         "feat/graphql",
+		CommitSHA:      "deadbeef",
+		Author:         "developer",
+		Status:         model.StatusRunning,
+		Port:           31001,
+		Subdomain:      "pr-10.preview.example.com",
+		PreviewURL:     "https://pr-10.preview.example.com",
+		ServiceName:    "web",
+		LastActivityAt: time.Now().UTC(),
+		CreatedAt:      time.Now().UTC(),
+		UpdatedAt:      time.Now().UTC(),
+	})
 
 	// 1. Test /healthz
 	t.Run("Health check", func(t *testing.T) {
@@ -83,8 +105,8 @@ func TestServerEndpoints(t *testing.T) {
 
 		var list []model.Deployment
 		_ = json.NewDecoder(w.Body).Decode(&list)
-		if len(list) != 0 {
-			t.Fatalf("expected empty list, got %d", len(list))
+		if len(list) != 1 {
+			t.Fatalf("expected 1 deployment, got %d", len(list))
 		}
 	})
 
@@ -124,7 +146,6 @@ func TestServerEndpoints(t *testing.T) {
 
 	// 5. Test Host Header Proxy Delegation
 	t.Run("Host header proxy delegation", func(t *testing.T) {
-		// Register a dummy preview backend
 		dummyBackend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			fmt.Fprintf(w, "Response from PR container")
 		}))
@@ -136,7 +157,6 @@ func TestServerEndpoints(t *testing.T) {
 
 		_ = standaloneProxy.RegisterRoute("pr-77.preview.example.com", backendPort)
 
-		// Make request with Host header set to preview subdomain
 		req := httptest.NewRequest(http.MethodGet, "http://pr-77.preview.example.com/", nil)
 		req.Host = "pr-77.preview.example.com"
 		w := httptest.NewRecorder()

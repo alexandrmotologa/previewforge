@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/alexandrmotologa/previewforge/internal/model"
@@ -11,14 +12,19 @@ import (
 
 const stickyMarker = "<!-- previewforge:status -->"
 
-// Commenter manages sticky GitHub PR comments and commit status checks.
+// Commenter manages sticky GitHub PR comments, commit status checks, and native GitHub Deployments.
 type Commenter struct {
-	client *Client
+	client        *Client
+	deploymentsMu sync.Mutex
+	deploymentIDs map[string]int64 // deployment ID -> GitHub Deployment ID
 }
 
 // NewCommenter constructs a Commenter.
 func NewCommenter(client *Client) *Commenter {
-	return &Commenter{client: client}
+	return &Commenter{
+		client:        client,
+		deploymentIDs: make(map[string]int64),
+	}
 }
 
 // SetCommitStatus publishes a status check on the commit SHA.
@@ -32,7 +38,7 @@ func (c *Commenter) SetCommitStatus(owner, repo, sha, state, targetURL, descript
 	}
 }
 
-// PostBuilding posts or updates the sticky comment when deployment begins.
+// PostBuilding posts or updates the sticky comment when deployment begins and registers GitHub Deployment.
 func (c *Commenter) PostBuilding(d *model.Deployment) {
 	body := fmt.Sprintf(`### PreviewForge Deployment
 - **Status**: Building...
@@ -43,6 +49,18 @@ Building Docker Compose stack in an isolated network.
 %s`, d.Branch, truncateSHA(d.CommitSHA), stickyMarker)
 
 	c.upsertStickyComment(d.RepoOwner, d.RepoName, d.PRNumber, body)
+
+	// Register Native GitHub Deployment
+	if c.client != nil {
+		envName := fmt.Sprintf("preview/pr-%d", d.PRNumber)
+		ghDepID, err := c.client.CreateDeployment(d.RepoOwner, d.RepoName, d.Branch, envName)
+		if err == nil && ghDepID > 0 {
+			c.deploymentsMu.Lock()
+			c.deploymentIDs[d.ID] = ghDepID
+			c.deploymentsMu.Unlock()
+			_ = c.client.CreateDeploymentStatus(d.RepoOwner, d.RepoName, ghDepID, "in_progress", d.PreviewURL, "Building preview stack")
+		}
+	}
 }
 
 // PostReady updates the sticky comment with the live URL when deployment is successful.
@@ -58,6 +76,15 @@ Ephemeral preview environment is live. Containers will be stopped when this pull
 %s`, d.PreviewURL, d.PreviewURL, d.Branch, truncateSHA(d.CommitSHA), d.BuildDurationSec, stickyMarker)
 
 	c.upsertStickyComment(d.RepoOwner, d.RepoName, d.PRNumber, body)
+
+	if c.client != nil {
+		c.deploymentsMu.Lock()
+		ghDepID := c.deploymentIDs[d.ID]
+		c.deploymentsMu.Unlock()
+		if ghDepID > 0 {
+			_ = c.client.CreateDeploymentStatus(d.RepoOwner, d.RepoName, ghDepID, "success", d.PreviewURL, "Preview environment ready")
+		}
+	}
 }
 
 // PostFailed updates the sticky comment when build or healthcheck fails.
@@ -75,6 +102,15 @@ func (c *Commenter) PostFailed(d *model.Deployment, logSnippet string) {
 %s`, d.Branch, truncateSHA(d.CommitSHA), d.ErrorMessage, logSnippet, stickyMarker)
 
 	c.upsertStickyComment(d.RepoOwner, d.RepoName, d.PRNumber, body)
+
+	if c.client != nil {
+		c.deploymentsMu.Lock()
+		ghDepID := c.deploymentIDs[d.ID]
+		c.deploymentsMu.Unlock()
+		if ghDepID > 0 {
+			_ = c.client.CreateDeploymentStatus(d.RepoOwner, d.RepoName, ghDepID, "failure", d.PreviewURL, d.ErrorMessage)
+		}
+	}
 }
 
 // PostDestroyed updates the sticky comment when the preview environment is torn down.
@@ -86,6 +122,17 @@ Ephemeral preview environment stopped and disk resources reclaimed.
 %s`, stickyMarker)
 
 	c.upsertStickyComment(repoOwner, repoName, prNumber, body)
+
+	deploymentID := fmt.Sprintf("pr-%d-%s", prNumber, repoName)
+	if c.client != nil {
+		c.deploymentsMu.Lock()
+		ghDepID := c.deploymentIDs[deploymentID]
+		delete(c.deploymentIDs, deploymentID)
+		c.deploymentsMu.Unlock()
+		if ghDepID > 0 {
+			_ = c.client.CreateDeploymentStatus(repoOwner, repoName, ghDepID, "inactive", "", "Preview environment destroyed")
+		}
+	}
 }
 
 func (c *Commenter) upsertStickyComment(owner, repo string, prNumber int, body string) {

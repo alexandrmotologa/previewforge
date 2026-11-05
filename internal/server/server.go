@@ -95,6 +95,18 @@ func (s *Server) registerRoutes() {
 			s.apiHandler.RebuildDeployment(w, r)
 			return
 		}
+		if strings.HasSuffix(path, "/sleep") {
+			s.apiHandler.SleepDeployment(w, r)
+			return
+		}
+		if strings.HasSuffix(path, "/wake") {
+			s.apiHandler.WakeDeployment(w, r)
+			return
+		}
+		if strings.HasSuffix(path, "/exec") {
+			s.apiHandler.ExecContainer(w, r)
+			return
+		}
 
 		if r.Method == http.MethodDelete {
 			s.apiHandler.DestroyDeployment(w, r)

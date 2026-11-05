@@ -11,20 +11,25 @@ PreviewForge can be configured through environment variables, CLI flags, or an o
 | `--proxy-mode` | `PREVIEWFORGE_PROXY_MODE` | `standalone` | Reverse proxy routing mechanism: `standalone` (built-in Go proxy) or `caddy` (Caddy Admin API). |
 | `--caddy-url` | `PREVIEWFORGE_CADDY_URL` | `http://127.0.0.1:2019` | Endpoint for Caddy Admin API when running in `caddy` mode. |
 | `--data-dir` | `PREVIEWFORGE_DATA_DIR` | `./data` | Directory where SQLite database and cloned git workspaces reside. |
-| `--github-token`| `GITHUB_TOKEN` | `""` | GitHub Personal Access Token or App token used to set commit statuses and publish sticky comments. |
+| `--github-token`| `GITHUB_TOKEN` | `""` | GitHub Personal Access Token or App token used for native GitHub Deployments, commit statuses, and sticky comments. |
 | `--webhook-secret`| `WEBHOOK_SECRET` | `""` | Secret key used to verify incoming GitHub webhook HMAC-SHA256 signatures (`X-Hub-Signature-256`). |
 | `--port-start` | `PREVIEWFORGE_PORT_START` | `31000` | Starting port number for ephemeral container allocations. |
 | `--port-end` | `PREVIEWFORGE_PORT_END` | `35000` | Ending port number for ephemeral container allocations. |
 | `--idle-timeout` | `PREVIEWFORGE_IDLE_TIMEOUT` | `1440` | Idle timeout in minutes before an unclosed preview stack is automatically reaped (default 24 hours). |
+| `--auto-sleep` | `PREVIEWFORGE_AUTO_SLEEP` | `60` | Inactivity duration in minutes before containers are hibernated (scale-to-zero) to reclaim host RAM. Set to 0 to disable. |
 | `--require-label`| `PREVIEWFORGE_REQUIRE_LABEL`| `""` | If set, only PRs containing this label (e.g. `preview`) will be deployed. |
 | `--allow-forks` | `PREVIEWFORGE_ALLOW_FORKS` | `false` | When false, PRs from external forks are rejected unless opened by the repository owner. |
+| `--auth-user` | `PREVIEWFORGE_AUTH_USER` | `""` | Global Basic Auth username protecting preview subdomains. |
+| `--auth-pass` | `PREVIEWFORGE_AUTH_PASS` | `""` | Global Basic Auth password protecting preview subdomains. Also usable as query param `?preview_key=...`. |
+| `--discord-webhook` | `DISCORD_WEBHOOK_URL` | `""` | Discord Webhook URL for real-time build and teardown notification cards. |
+| `--slack-webhook` | `SLACK_WEBHOOK_URL` | `""` | Slack Webhook URL for build and teardown status messages. |
 
 ## 2. In-Repository Configuration (`.previewforge.yml`)
 
 Add an optional `.previewforge.yml` file to the root of your target repository to customize build behavior:
 
 ```yaml
-# Path to compose file relative to repo root (default: docker-compose.yml or compose.yaml)
+# Compose file to execute (default: docker-compose.yml or compose.yaml)
 compose_file: "docker-compose.yml"
 
 # Primary service to expose via the preview subdomain (default: auto-detected)
@@ -35,6 +40,17 @@ port: 3000
 
 # Path polled during readiness verification (default: /)
 health_path: "/api/health"
+
+# Post-deploy migration command executed inside the container service before marking ready
+post_deploy:
+  command: "npx prisma migrate deploy"
+  service: "web"
+  timeout_sec: 120
+
+# Optional password protection for this specific repository preview
+basic_auth:
+  user: "tester"
+  password: "stagingpassword123"
 
 # Environment variables injected into preview containers
 env:
