@@ -1,0 +1,275 @@
+const fs = require('fs');
+const path = require('path');
+const { execSync } = require('child_process');
+
+function buildLogoSvg() {
+  return `<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <defs>
+    <clipPath id="squircle-clip">
+      <rect x="24" y="24" width="976" height="976" rx="220" />
+    </clipPath>
+
+    <!-- Electric Cyan Glowing Optics & Telemetry Core -->
+    <linearGradient id="cyan-glow" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00f5ff"/>
+      <stop offset="100%" stop-color="#0284c7"/>
+    </linearGradient>
+
+    <!-- Warm Forge Ember Accent for Raptor Hook Beak -->
+    <linearGradient id="ember-gradient" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#fbbf24"/>
+      <stop offset="50%" stop-color="#f59e0b"/>
+      <stop offset="100%" stop-color="#b45309"/>
+    </linearGradient>
+
+    <!-- Precision Low-Poly Facet Shading -->
+    <linearGradient id="facet-hl" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#94a3b8"/>
+      <stop offset="100%" stop-color="#64748b"/>
+    </linearGradient>
+
+    <linearGradient id="facet-lt" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#64748b"/>
+      <stop offset="100%" stop-color="#475569"/>
+    </linearGradient>
+
+    <linearGradient id="facet-md" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#475569"/>
+      <stop offset="100%" stop-color="#334155"/>
+    </linearGradient>
+
+    <linearGradient id="facet-dk" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#334155"/>
+      <stop offset="100%" stop-color="#1e293b"/>
+    </linearGradient>
+
+    <linearGradient id="facet-dp" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#1e293b"/>
+      <stop offset="100%" stop-color="#0b0f19"/>
+    </linearGradient>
+
+    <filter id="subtle-shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#020617" flood-opacity="0.16" />
+    </filter>
+
+    <filter id="optics-glow" x="-30%" y="-30%" width="160%" height="160%">
+      <feDropShadow dx="0" dy="0" stdDeviation="8" flood-color="#00f5ff" flood-opacity="0.8" />
+    </filter>
+  </defs>
+
+  <!-- Luxury White Squircle Container -->
+  <rect x="24" y="24" width="976" height="976" rx="220" fill="#ffffff" stroke="#e2e8f0" stroke-width="6" />
+
+  <g clip-path="url(#squircle-clip)">
+    <g transform="translate(512, 512)" filter="url(#subtle-shadow)">
+
+      <!-- Massive Hexagonal Architectural Gateway Frame -->
+      <polygon points="
+        0,-390
+        338,-195
+        338,195
+        0,390
+        -338,195
+        -338,-195
+      " fill="none" stroke="#0f172a" stroke-width="38" stroke-linejoin="round" />
+
+      <!-- Inner Telemetry Frame (Dashed Electric Cyan) -->
+      <polygon points="
+        0,-355
+        307,-177
+        307,177
+        0,355
+        -307,177
+        -307,-177
+      " fill="none" stroke="#00f5ff" stroke-width="3" opacity="0.45" stroke-dasharray="16, 12" />
+
+      <!-- 100% Watertight Solid Base Silhouette (Zero-Leak Foundation) -->
+      <path d="
+        M 0,-330
+        L 45,-300
+        L 90,-240
+        L 115,-180
+        L 145,-120
+        L 130,-50
+        L 210,-20
+        L 285,60
+        L 260,170
+        L 290,225
+        L 215,290
+        L 120,335
+        L 0,360
+        L -120,335
+        L -215,290
+        L -290,225
+        L -260,170
+        L -285,60
+        L -210,-20
+        L -130,-50
+        L -145,-120
+        L -115,-180
+        L -90,-240
+        L -45,-300
+        Z
+      " fill="#070a12" />
+
+      <!-- ================= LOW-POLY RAPTOR FACETS ================= -->
+
+      <!-- Falcon Aerodynamic Crown & Crest Feathers -->
+      <polygon points="0,-330 0,-240 45,-300" fill="url(#facet-lt)" />
+      <polygon points="0,-330 0,-240 -45,-300" fill="url(#facet-md)" />
+      <polygon points="45,-300 0,-240 90,-240" fill="url(#facet-hl)" />
+      <polygon points="-45,-300 0,-240 -90,-240" fill="url(#facet-dk)" />
+      <polygon points="90,-240 0,-240 60,-180" fill="url(#facet-lt)" />
+      <polygon points="-90,-240 0,-240 -60,-180" fill="url(#facet-dp)" />
+      <polygon points="90,-240 60,-180 115,-180" fill="url(#facet-md)" />
+      <polygon points="-90,-240 -60,-180 -115,-180" fill="url(#facet-dp)" />
+
+      <!-- Forehead & Supraorbital Brow Armor -->
+      <polygon points="0,-240 0,-150 60,-180" fill="url(#facet-hl)" />
+      <polygon points="0,-240 0,-150 -60,-180" fill="url(#facet-md)" />
+      <polygon points="60,-180 0,-150 40,-120" fill="url(#facet-lt)" />
+      <polygon points="-60,-180 0,-150 -40,-120" fill="url(#facet-dk)" />
+
+      <!-- Nasal Bridge down to Beak Base -->
+      <polygon points="0,-150 0,-60 30,-90" fill="url(#facet-lt)" />
+      <polygon points="0,-150 0,-60 -30,-90" fill="url(#facet-dk)" />
+      <polygon points="0,-150 40,-120 30,-90" fill="url(#facet-hl)" />
+      <polygon points="-0,-150 -40,-120 -30,-90" fill="url(#facet-md)" />
+
+      <!-- Temple & Ear Coverts -->
+      <polygon points="115,-180 60,-180 90,-120" fill="url(#facet-lt)" />
+      <polygon points="-115,-180 -60,-180 -90,-120" fill="url(#facet-dk)" />
+      <polygon points="115,-180 90,-120 145,-120" fill="url(#facet-md)" />
+      <polygon points="-115,-180 -90,-120 -145,-120" fill="url(#facet-dp)" />
+
+      <!-- Predator Optics (Almond-Canted Cyan Sockets) -->
+      <!-- Left Eye (Negative X) -->
+      <polygon points="-90,-120 -35,-98 -52,-80 -96,-96" fill="#070a12" stroke="#0f172a" stroke-width="2" />
+      <polygon points="-84,-114 -42,-96 -55,-84 -88,-98" fill="url(#cyan-glow)" filter="url(#optics-glow)" />
+
+      <!-- Right Eye (Positive X) -->
+      <polygon points="90,-120 35,-98 52,-80 96,-96" fill="#070a12" stroke="#0f172a" stroke-width="2" />
+      <polygon points="84,-114 42,-96 55,-84 88,-98" fill="url(#cyan-glow)" filter="url(#optics-glow)" />
+
+      <!-- Hooked Raptor Beak (Sharp Anvil-Forged Geometric Hook) -->
+      <polygon points="0,-60 0,60 26,10 30,-50" fill="url(#ember-gradient)" />
+      <polygon points="0,-60 0,60 -26,10 -30,-50" fill="#92400e" />
+      <!-- Beak Recurve Tip Underside -->
+      <polygon points="0,60 16,20 0,5" fill="#78350f" />
+      <polygon points="0,60 -16,20 0,5" fill="#451a03" />
+
+      <!-- Peregrine Malar Stripes (Cheek Facets) -->
+      <polygon points="30,-50 26,10 50,30 85,-40" fill="url(#facet-dk)" />
+      <polygon points="-30,-50 -26,10 -50,30 -85,-40" fill="url(#facet-dp)" />
+      <polygon points="35,-98 52,-80 85,-40 30,-50" fill="url(#facet-md)" />
+      <polygon points="-35,-98 -52,-80 -85,-40 -30,-50" fill="url(#facet-dk)" />
+      <polygon points="96,-96 85,-40 130,-50 145,-120" fill="url(#facet-lt)" />
+      <polygon points="-96,-96 -85,-40 -130,-50 -145,-120" fill="url(#facet-dp)" />
+
+      <!-- Narrow Neck Articulation -->
+      <polygon points="0,5 0,60 25,75 0,95" fill="url(#facet-dk)" />
+      <polygon points="0,5 0,60 -25,75 0,95" fill="#070a12" />
+      <polygon points="26,10 50,30 45,80 25,75" fill="url(#facet-lt)" />
+      <polygon points="-26,10 -50,30 -45,80 -25,75" fill="url(#facet-dk)" />
+      <polygon points="50,30 85,-40 130,-50 90,40 45,80" fill="url(#facet-md)" />
+      <polygon points="-50,30 -85,-40 -130,-50 -90,40 -45,80" fill="url(#facet-dp)" />
+
+      <!-- Shoulders & Wings (Aerodynamic Folded Tiers) -->
+      <!-- Shoulder Flare -->
+      <polygon points="130,-50 210,-20 165,50 90,40" fill="url(#facet-hl)" />
+      <polygon points="-130,-50 -210,-20 -165,50 -90,40" fill="url(#facet-dp)" />
+
+      <!-- Upper Wing Coverts -->
+      <polygon points="210,-20 285,60 215,110 165,50" fill="url(#facet-lt)" />
+      <polygon points="-210,-20 -285,60 -215,110 -165,50" fill="url(#facet-dk)" />
+
+      <!-- Mid Wing Primaries -->
+      <polygon points="285,60 260,170 190,170 215,110" fill="url(#facet-hl)" />
+      <polygon points="-285,60 -260,170 -190,170 -215,110" fill="#070a12" />
+
+      <!-- Lower Wing Feathers Flare -->
+      <polygon points="260,170 290,225 215,225 190,170" fill="url(#facet-md)" />
+      <polygon points="-260,170 -290,225 -215,225 -190,170" fill="#070a12" />
+
+      <polygon points="290,225 215,290 155,250 215,225" fill="url(#facet-dk)" />
+      <polygon points="-290,225 -215,290 -155,250 -215,225" fill="#070a12" />
+
+      <!-- Pectoral Chest Armor (V-Shape Falcon Shield) -->
+      <polygon points="0,95 25,75 45,80 75,135 0,150" fill="url(#facet-lt)" />
+      <polygon points="0,95 -25,75 -45,80 -75,135 0,150" fill="url(#facet-md)" />
+
+      <polygon points="45,80 90,40 165,50 135,135 75,135" fill="url(#facet-md)" />
+      <polygon points="-45,80 -90,40 -165,50 -135,135 -75,135" fill="url(#facet-dp)" />
+
+      <polygon points="165,50 215,110 190,170 135,135" fill="url(#facet-lt)" />
+      <polygon points="-165,50 -215,110 -190,170 -135,135" fill="url(#facet-dp)" />
+
+      <!-- Central Forge Core Reactor (Diamond Nexus) -->
+      <polygon points="0,170 50,210 0,250 -50,210" fill="#0f172a" stroke="#00f5ff" stroke-width="3" />
+      <polygon points="0,180 36,210 0,240 -36,210" fill="url(#cyan-glow)" filter="url(#optics-glow)" opacity="0.95" />
+
+      <!-- Keel Fluke Plate (Lower Anvil Base) -->
+      <polygon points="0,150 75,135 135,135 190,170 115,220 50,210 0,170" fill="url(#facet-hl)" />
+      <polygon points="0,150 -75,135 -135,135 -190,170 -115,220 -50,210 0,170" fill="url(#facet-dk)" />
+
+      <polygon points="0,250 50,210 115,220 95,280 0,295" fill="url(#facet-lt)" />
+      <polygon points="0,250 -50,210 -115,220 -95,280 0,295" fill="url(#facet-dk)" />
+
+      <polygon points="115,220 155,250 215,290 120,335 95,280" fill="url(#facet-md)" />
+      <polygon points="-115,220 -155,250 -215,290 -120,335 -95,280" fill="#070a12" />
+
+      <!-- Keel Anvil Tail Fluke -->
+      <polygon points="0,295 95,280 120,335 0,360" fill="url(#facet-hl)" />
+      <polygon points="0,295 -95,280 -120,335 0,360" fill="url(#facet-dp)" />
+
+    </g>
+  </g>
+</svg>`;
+}
+
+const docsImagesDir = path.join(__dirname, '..', 'docs', 'images');
+const svg = buildLogoSvg();
+const svgPath = path.join(docsImagesDir, 'logo.svg');
+fs.writeFileSync(svgPath, svg);
+
+const htmlPath = path.join(docsImagesDir, 'logo_render.html');
+const html = `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 1024px;
+      height: 1024px;
+      overflow: hidden;
+      background: transparent;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    img, svg { width: 1024px; height: 1024px; display: block; }
+  </style>
+</head>
+<body>
+  ${svg}
+</body>
+</html>`;
+fs.writeFileSync(htmlPath, html);
+
+const chromePath = 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe';
+const pngPath = path.join(docsImagesDir, 'logo.png');
+
+try {
+  const fileUrl = 'file:///' + htmlPath.replace(/\\/g, '/');
+  const cmd = `"${chromePath}" --headless=new --screenshot="${pngPath}" --window-size=1024,1024 --default-background-color=00000000 "${fileUrl}"`;
+  execSync(cmd, { stdio: 'inherit' });
+  console.log('Successfully rendered aerodynamic falcon logo.png at 1024x1024!');
+} catch (e) {
+  console.error('Headless Chrome render failed:', e);
+} finally {
+  if (fs.existsSync(htmlPath)) {
+    fs.unlinkSync(htmlPath);
+  }
+}

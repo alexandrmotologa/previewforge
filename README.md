@@ -1,6 +1,28 @@
-# PreviewForge
+<p align="center">
+  <img src="docs/images/logo.png?raw=true" alt="PreviewForge Mascot Logo" width="130" style="border-radius: 24px;" />
+</p>
 
-Self-hosted ephemeral pull request preview supervisor and reverse proxy daemon. Runs on a single Linux or VPS server ($5 to $10/month), receives GitHub webhooks, builds Docker Compose stacks in isolated networks with dynamic port multiplexing, configures HTTPS subdomains via Caddy or the built-in proxy, and publishes sticky status comments on pull requests. Features auto-sleep container hibernation, wake-on-request proxying, post-deploy migration hooks, disk space guard, and an interactive web studio. On merge or close, it halts containers and reclaims disk space.
+<h1 align="center">PreviewForge</h1>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/go-1.23+-00ADD8?style=flat-square&logo=go" alt="Go 1.23+" />
+  <img src="https://img.shields.io/badge/react-19-61DAFB?style=flat-square&logo=react" alt="React 19" />
+  <img src="https://img.shields.io/badge/docker-compose-2496ED?style=flat-square&logo=docker" alt="Docker Compose" />
+  <img src="https://img.shields.io/badge/caddy-v2-1F88C0?style=flat-square&logo=caddy" alt="Caddy" />
+  <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="License MIT" />
+</p>
+
+<p align="center">
+  Self-hosted ephemeral pull request preview supervisor and reverse proxy daemon. Runs on a single Linux or VPS server ($5 to $10/month), receives GitHub webhooks, builds Docker Compose stacks in isolated networks with dynamic port multiplexing, configures HTTPS subdomains via Caddy or the built-in proxy, and publishes sticky status comments on pull requests. Features auto-sleep container hibernation, wake-on-request proxying, post-deploy migration hooks, disk space guard, and an interactive web studio. On merge or close, it halts containers and reclaims disk space.
+</p>
+
+<p align="center">
+  <img src="docs/images/previewforge_demo.gif?raw=true" alt="PreviewForge Live Demonstration" width="100%" style="border-radius: 12px; border: 1px solid #1e293b;" />
+</p>
+
+---
+
+## Architecture and Data Flow
 
 ```
 +-----------------------------------------------------------------------------------+
@@ -69,6 +91,32 @@ Self-hosted ephemeral pull request preview supervisor and reverse proxy daemon. 
   - Live Server-Sent Events (SSE) build logs.
   - In-browser Container Exec console for running diagnostic commands (`env`, `ls`, `npm list`, `df -h`) without SSH access.
   - Manual sleep, wake, rebuild, and teardown buttons.
+
+---
+
+## Interactive Web Studio & Mobile Experience
+
+### Desktop Matrix Overview
+Full visibility into active preview containers, dynamic port allocations, host RAM consumption, and VPS storage guards.
+
+<p align="center">
+  <img src="docs/images/previewforge_dashboard.png?raw=true" alt="PreviewForge Desktop Dashboard" width="100%" style="border-radius: 8px; border: 1px solid #1e293b;" />
+</p>
+
+### Real-Time Build Logs & Diagnostic Container Console
+Inspect shallow git clone progress, docker compose build output, and run interactive shell commands inside live containers directly from the web studio.
+
+<p align="center">
+  <img src="docs/images/previewforge_logs_exec.png?raw=true" alt="PreviewForge Build Logs" width="49%" style="border-radius: 8px; border: 1px solid #1e293b;" />
+  <img src="docs/images/previewforge_exec_console.png?raw=true" alt="PreviewForge Container Exec Console" width="49%" style="border-radius: 8px; border: 1px solid #1e293b;" />
+</p>
+
+### Responsive Mobile Interface
+Optimized for smartphones and tablets. Review preview environments, monitor build statuses, and trigger manual wake or teardown actions from mobile devices.
+
+<p align="center">
+  <img src="docs/images/previewforge_mobile.png?raw=true" alt="PreviewForge Mobile Responsive View" width="340" style="border-radius: 16px; border: 1px solid #1e293b;" />
+</p>
 
 ---
 
