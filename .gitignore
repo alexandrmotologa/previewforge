@@ -1,0 +1,32 @@
+# Binaries
+bin/
+/dist/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+/previewforge
+
+# Node & Frontend
+node_modules/
+web/node_modules/
+.vite/
+*.log
+*.tsbuildinfo
+
+# Databases & Workspaces
+data/
+workspaces/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# OS & IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*~
