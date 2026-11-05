@@ -77,11 +77,9 @@ func TestStandaloneProxyFeatures(t *testing.T) {
 
 	// 3. Test Wake-on-Request
 	t.Run("Wake on request", func(t *testing.T) {
-		var wakeTriggered bool
+		wakeChan := make(chan string, 1)
 		proxy.SetWakeHandler(func(depID string) error {
-			if depID == "pr-sleep-test" {
-				wakeTriggered = true
-			}
+			wakeChan <- depID
 			return nil
 		})
 
@@ -104,10 +102,13 @@ func TestStandaloneProxyFeatures(t *testing.T) {
 			t.Fatalf("expected waking up HTML template, got %s", string(bodyBytes))
 		}
 
-		// Allow async goroutine to execute
-		time.Sleep(50 * time.Millisecond)
-		if !wakeTriggered {
-			t.Fatalf("expected wake handler to be triggered")
+		select {
+		case depID := <-wakeChan:
+			if depID != "pr-sleep-test" {
+				t.Fatalf("expected deployment ID 'pr-sleep-test', got %s", depID)
+			}
+		case <-time.After(1 * time.Second):
+			t.Fatalf("timed out waiting for wake handler to trigger")
 		}
 	})
 }

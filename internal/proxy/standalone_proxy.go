@@ -140,9 +140,13 @@ func (p *StandaloneProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	// 2. Hibernation / Wake-on-Request
 	if route.IsSleeping {
-		if p.wakeHandler != nil && route.DeploymentID != "" {
+		p.mu.RLock()
+		wakeFn := p.wakeHandler
+		p.mu.RUnlock()
+
+		if wakeFn != nil && route.DeploymentID != "" {
 			go func() {
-				_ = p.wakeHandler(route.DeploymentID)
+				_ = wakeFn(route.DeploymentID)
 			}()
 		}
 		p.renderWakingUp(w, r, route.DeploymentID)
@@ -150,8 +154,12 @@ func (p *StandaloneProxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 3. Record activity for idle tracking
-	if p.activityHandler != nil && route.DeploymentID != "" {
-		p.activityHandler(route.DeploymentID)
+	p.mu.RLock()
+	activityFn := p.activityHandler
+	p.mu.RUnlock()
+
+	if activityFn != nil && route.DeploymentID != "" {
+		activityFn(route.DeploymentID)
 	}
 
 	targetURL, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", route.TargetPort))
